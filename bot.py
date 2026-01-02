@@ -447,11 +447,17 @@ def safe_edit_message(caption, cid, mid, reply_markup=None):
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def show_main_menu(m):
-    db.get_user(m.from_user.id, m.from_user.first_name)
-    txt = (f"👋 <b>Hello, {html.escape(m.from_user.first_name)}!</b>\n\n"
+    # Ensure user exists in DB (safe)
+    try:
+        db.get_user(m.from_user.id, m.from_user.first_name or m.from_user.username or "Player")
+    except Exception as e:
+        logger.exception("DB get_user error in show_main_menu")
+
+    txt = (f"👋 <b>Hello, {html.escape(m.from_user.first_name or m.from_user.username or 'Player')}!</b>\n\n"
            "🧩 <b>Welcome to Word Vortex</b>\n"
            "The most advanced multiplayer word search bot on Telegram.\n\n"
            "👇 <b>What would you like to do?</b>")
+
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
                InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
@@ -459,14 +465,24 @@ def show_main_menu(m):
                InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
     markup.add(InlineKeyboardButton("🐞 Report Issue", callback_data='open_issue'),
                InlineKeyboardButton("💳 Buy Points", callback_data='open_plans'))
+    # join & check join
     markup.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"),
                InlineKeyboardButton("🔄 Check Join", callback_data='check_join'))
     markup.add(InlineKeyboardButton("👨‍💻 Support / Owner", url=SUPPORT_GROUP_LINK))
+
+    # Try send photo; if it fails, always send text reply so user sees menu
     try:
         bot.send_photo(m.chat.id, START_IMG_URL, caption=txt, reply_markup=markup)
     except Exception:
-        logger.exception("Failed to send START_IMG_URL; falling back to text menu")
-        bot.reply_to(m, txt, reply_markup=markup)
+        logger.exception("send_photo failed in show_main_menu, sending text fallback")
+        try:
+            bot.reply_to(m, txt, reply_markup=markup)
+        except Exception:
+            # Last resort: plain text
+            try:
+                bot.send_message(m.chat.id, txt)
+            except Exception:
+                logger.exception("Failed to send any start message")
 
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callbacks(c):
