@@ -28,7 +28,7 @@ app = Flask(__name__)
 
 # Environment Variables (Render Friendly)
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '8208557623:AAHWSJEYb57_OblzITT9jHAgvtu_vyGraaY')
-OWNER_ID = int(os.environ.get('OWNER_ID', '8271254197')) # Apna Numeric ID dalein
+OWNER_ID = int(os.environ.get('OWNER_ID', 8271254197)) # Apna Numeric ID dalein
 CHANNEL_USERNAME = os.environ.get('CHANNEL_USERNAME', '@Ruhvaan_Updates') # E.g., @Ruhvaan_Updates
 FORCE_JOIN = True # Set False to disable force join
 
@@ -420,7 +420,7 @@ def handle_callbacks(c):
                    InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
         markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
                    InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
-        markup.add(InlineKeyboardButton("👨‍💻 Support", url=SUPPORT_GROUP_LINK))
+        markup.add(InlineKeyboardButton("👨‍💻 Support", url='https://t.me/Ruhvaan'))
         bot.edit_message_caption(txt, cid, mid, reply_markup=markup)
 
     # Game Callbacks
