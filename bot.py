@@ -116,6 +116,26 @@ class DatabaseManager:
         conn.close()
         return user
 
+    def register_user(self, user_id, name):
+        """
+        Ensure user exists. Return (user_row, created_bool).
+        This helper is used so callers can detect newly-registered users.
+        """
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+        user = c.fetchone()
+        if user:
+            conn.close()
+            return user, False
+        join_date = time.strftime("%Y-%m-%d")
+        c.execute("INSERT INTO users (user_id, name, join_date) VALUES (?, ?, ?)", (user_id, name, join_date))
+        conn.commit()
+        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+        user = c.fetchone()
+        conn.close()
+        return user, True
+
     def update_stats(self, user_id, score_delta=0, hint_delta=0, win=False, games_played_delta=0):
         conn = self.connect()
         c = conn.cursor()
@@ -447,27 +467,34 @@ def safe_edit_message(caption, cid, mid, reply_markup=None):
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def show_main_menu(m):
-    # Ensure user exists in DB (safe)
+    # Register user (and detect if newly registered)
     try:
-        db.get_user(m.from_user.id, m.from_user.first_name or m.from_user.username or "Player")
+        name = m.from_user.first_name or m.from_user.username or "Player"
+        user_row, created = db.register_user(m.from_user.id, name)
+        if created and OWNER_ID:
+            # Notify owner about new registration
+            try:
+                bot.send_message(OWNER_ID, f"🔔 New user registered:\nName: {html.escape(name)}\nID: {m.from_user.id}\nChat: {m.chat.id}")
+            except Exception:
+                logger.exception("Failed to notify owner about new user")
     except Exception as e:
-        logger.exception("DB get_user error in show_main_menu")
+        logger.exception("DB register_user error in show_main_menu")
 
     txt = (f"👋 <b>Hello, {html.escape(m.from_user.first_name or m.from_user.username or 'Player')}!</b>\n\n"
            "🧩 <b>Welcome to Word Vortex</b>\n"
            "The most advanced multiplayer word search bot on Telegram.\n\n"
            "👇 <b>What would you like to do?</b>")
 
+    # Build keyboard. Put Join & Check Join at the top as requested.
     markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"),
+               InlineKeyboardButton("🔄 Check Join", callback_data='check_join'))
     markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
                InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
     markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
                InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
     markup.add(InlineKeyboardButton("🐞 Report Issue", callback_data='open_issue'),
                InlineKeyboardButton("💳 Buy Points", callback_data='open_plans'))
-    # join & check join
-    markup.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"),
-               InlineKeyboardButton("🔄 Check Join", callback_data='check_join'))
     markup.add(InlineKeyboardButton("👨‍💻 Support / Owner", url=SUPPORT_GROUP_LINK))
 
     # Try send photo; if it fails, always send text reply so user sees menu
@@ -590,7 +617,7 @@ def handle_callbacks(c):
         try:
             bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
             ack("Opened commands.")
-             except:
+        except:
             ack("❌ Could not open commands.", alert=True)
         return
 
@@ -609,13 +636,34 @@ def handle_callbacks(c):
             ack("❌ Could not open leaderboard.", alert=True)
         return
 
-    # MENU BACK / STATS -> rebuild menu as new message
-    if data in ('menu_stats', 'menu_back'):
+    # MENU BACK -> rebuild menu as new message
+    if data == 'menu_back':
         try:
             show_main_menu(c.message)  # show_main_menu will send a new menu message
             ack("Menu opened.")
         except:
             ack("❌ Could not open menu.", alert=True)
+        return
+
+    # MENU STATS -> show user's stats
+    if data == 'menu_stats':
+        try:
+            user = db.get_user(uid, c.from_user.first_name or c.from_user.username or "Player")
+            session_points = 0
+            gid = c.message.chat.id
+            if gid in games:
+                session_points = games[gid].players_scores.get(uid, 0)
+            txt = (f"📋 <b>Your Stats</b>\n"
+                   f"Name: {html.escape(user[1])}\n"
+                   f"Total Score: {user[5]}\n"
+                   f"Wins: {user[4]}\n"
+                   f"Games Played: {user[3]}\n"
+                   f"Session Points (this chat): {session_points}\n"
+                   f"Hint Balance: {user[6]}")
+            bot.send_message(cid, txt, parse_mode='HTML')
+            ack("Stats opened.")
+        except Exception:
+            ack("❌ Could not open stats.", alert=True)
         return
 
     # GAME callbacks (guess/hint/score) remain same behavior
@@ -801,6 +849,11 @@ def scorecard(m):
            f"Session Points (this chat): {session_points}\n"
            f"Hint Balance: {u[6]}")
     bot.reply_to(m, txt)
+
+# alias: /mystats should behave same as /scorecard (user requested)
+@bot.message_handler(commands=['mystats'])
+def mystats(m):
+    scorecard(m)
 
 @bot.message_handler(commands=['balance'])
 def balance(m):
