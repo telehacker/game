@@ -28,7 +28,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-TOKEN = os.environ.get('TELEGRAM_TOKEN', '8208557623:AAGFc8z-y4jPkudON9B0dqlRkeXYFJfVtjY')
+TOKEN = os.environ.get('TELEGRAM_TOKEN', '8208557623:AAFNjAao3iZoq2eWR0v7MvPCYqKRl72GN7A')
 try:
     OWNER_ID = int(os.environ.get('OWNER_ID', '8271254197'))
 except Exception:
@@ -38,7 +38,7 @@ CHANNEL_USERNAME = os.environ.get('CHANNEL_USERNAME', '@Ruhvaan_Updates')
 FORCE_JOIN = os.environ.get('FORCE_JOIN', 'False').lower() in ('1', 'true', 'yes')
 
 SUPPORT_GROUP_LINK = os.environ.get('SUPPORT_GROUP_LINK', 'https://t.me/Ruhvaan')
-START_IMG_URL = os.environ.get('START_IMG_URL', 'https://img.freepik.com/free-vector/word-search-puzzle_23-2149040310.jpg')
+START_IMG_URL = os.environ.get('START_IMG_URL', 'https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg')
 
 bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
 
@@ -51,7 +51,7 @@ NORMAL_POINTS = 2
 FINISHER_POINTS = 5
 
 BAD_WORDS = {"SEX", "PORN", "NUDE", "XXX", "DICK", "COCK", "PUSSY", "FUCK", "SHIT", "BITCH", "ASS", "HENTAI", "BOOBS"}
-GAME_DURATION = 600
+GAME_DURATION = 600  # seconds (10 minutes)
 COOLDOWN = 2
 HINT_COST = 50
 
@@ -329,7 +329,7 @@ fetch_words()
 games = {}  # chat_id -> GameSession
 
 class GameSession:
-    def __init__(self, chat_id, is_hard=False):
+    def __init__(self, chat_id, is_hard=False, duration=GAME_DURATION):
         self.chat_id = chat_id
         self.is_hard = is_hard
         self.size = 10 if is_hard else 8
@@ -341,6 +341,10 @@ class GameSession:
         self.grid = []
         self.players_scores = {}  # uid -> points
         self.players_last_guess = {}
+        self.duration = duration
+        self.message_id = None
+        self.active = True
+        self.timer_thread = None
         self.generate()
 
     def generate(self):
@@ -386,6 +390,56 @@ class GameSession:
                 masked = w[0] + ("-" * (len(w)-1))
                 hints.append(f"<code>{masked}</code> ({len(w)})")
         return "\n".join(hints)
+
+    def start_timer(self):
+        # spawn background timer thread for this session
+        if self.timer_thread and self.timer_thread.is_alive():
+            return
+        self.timer_thread = threading.Thread(target=self._run_timer, daemon=True)
+        self.timer_thread.start()
+
+    def _run_timer(self):
+        try:
+            while self.active:
+                elapsed = time.time() - self.start_time
+                remaining = int(self.duration - elapsed)
+                if remaining <= 0:
+                    # time up
+                    try:
+                        bot.send_message(self.chat_id, "⏰ Time's up! The game has ended.")
+                    except Exception:
+                        logger.exception("Failed to notify chat on timeout")
+                    # end game as timeout
+                    try:
+                        end_game_session(self.chat_id, "timeout")
+                    except Exception:
+                        logger.exception("end_game_session on timeout failed")
+                    break
+                # update caption (every 10 seconds) if we have a message id
+                if self.message_id:
+                    mins = remaining // 60
+                    secs = remaining % 60
+                    time_str = f"{mins}:{secs:02d}"
+                    caption = (f"🔥 <b>WORD VORTEX STARTED!</b>\n"
+                               f"Mode: {'Hard (10x10)' if self.is_hard else 'Normal (8x8)'}\n"
+                               f"⏱ Time Left: {time_str}\n\n"
+                               f"<b>👇 WORDS TO FIND:</b>\n"
+                               f"{self.get_hint_text()}")
+                    # create markup same as when started
+                    markup = InlineKeyboardMarkup()
+                    markup.add(InlineKeyboardButton("🔍 Found It!", callback_data='game_guess'))
+                    markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data='game_hint'),
+                               InlineKeyboardButton("📊 Score", callback_data='game_score'))
+                    try:
+                        safe_edit_message(caption, self.chat_id, self.message_id, reply_markup=markup)
+                    except Exception:
+                        logger.exception("Timer safe_edit_message failed")
+                # Sleep a short while, but wake frequently enough to show decent countdown
+                time.sleep(10)
+        except Exception:
+            logger.exception("GameSession._run_timer error")
+        finally:
+            self.active = False
 
 # ==========================================
 # 🛡️ HELPERS & PERMISSIONS
@@ -471,12 +525,12 @@ def show_main_menu(m):
     try:
         name = m.from_user.first_name or m.from_user.username or "Player"
         user_row, created = db.register_user(m.from_user.id, name)
-        if created and OWNER_ID:
-            # Notify owner about new registration
+        # Notify owner on every /start (user requested owner notification)
+        if OWNER_ID:
             try:
-                bot.send_message(OWNER_ID, f"🔔 New user registered:\nName: {html.escape(name)}\nID: {m.from_user.id}\nChat: {m.chat.id}")
+                bot.send_message(OWNER_ID, f"🔔 /start used:\nName: {html.escape(name)}\nID: {m.from_user.id}\nChat: {m.chat.id}")
             except Exception:
-                logger.exception("Failed to notify owner about new user")
+                logger.exception("Failed to notify owner about /start")
     except Exception as e:
         logger.exception("DB register_user error in show_main_menu")
 
@@ -514,42 +568,105 @@ def show_main_menu(m):
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callbacks(c):
     """
-    Robust callback handler:
-    - Avoid trying to edit photo captions for long content (edit often fails).
-    - Instead send a NEW message for menus/help/commands and reply to the callback
-      with a short non-alert confirmation so the client doesn't show a long popup.
-    - Keep existing game callbacks (guess/hint/score) behavior intact.
+    Robust callback handler with fallbacks:
+    - Acknowledge callback early to clear client loading.
+    - For menu actions that sometimes fail (due to parse_mode or chat permissions),
+      try multiple fallbacks including sending as a private message to the user.
     """
     cid = c.message.chat.id
     mid = c.message.message_id
     uid = c.from_user.id
     data = c.data
 
-    # QUICK: always answer callback (short) to clear client loading state
-    def ack(text="Done", alert=False):
+    # QUICK: always answer callback (non-alert) immediately to clear client loading state
+    try:
+        bot.answer_callback_query(c.id, "", show_alert=False)
+    except Exception:
+        pass
+
+    # small helper to send menu text with fallbacks
+    def send_text_with_fallback(chat_id, text, reply_markup=None, parse_mode='HTML'):
+        # Try: send to same chat with parse_mode
         try:
-            bot.answer_callback_query(c.id, text, show_alert=alert)
-        except:
-            pass
+            bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return True
+        except Exception as e:
+            logger.debug(f"send_text_with_fallback: send_message with parse_mode failed: {e}")
+        # Try: without parse_mode
+        try:
+            bot.send_message(chat_id, text, reply_markup=reply_markup)
+            return True
+        except Exception as e:
+            logger.debug(f"send_text_with_fallback: send_message without parse_mode failed: {e}")
+        # Try: send as private message to user (if different chat)
+        try:
+            bot.send_message(uid, text, parse_mode=parse_mode)
+            # Notify in group that the menu was sent privately (so user knows)
+            try:
+                bot.send_message(chat_id, "🔔 I have sent you the information in a private message. Please check your PMs.")
+            except:
+                pass
+            return True
+        except Exception as e:
+            logger.exception(f"send_text_with_fallback: private send failed: {e}")
+            return False
 
     # CHECK JOIN
     if data == "check_join":
-        if is_subscribed(uid):
-            ack("✅ Verified! Welcome.")
-            try: bot.delete_message(cid, mid)
-            except: pass
-            show_main_menu(c.message)
-        else:
-            ack("❌ You haven't joined yet!", alert=True)
+        try:
+            if is_subscribed(uid):
+                try: bot.delete_message(cid, mid)
+                except: pass
+                show_main_menu(c.message)
+                try:
+                    bot.answer_callback_query(c.id, "✅ Verified! Welcome.")
+                except:
+                    pass
+            else:
+                try:
+                    bot.answer_callback_query(c.id, "❌ You haven't joined yet!", show_alert=True)
+                except:
+                    pass
+        except Exception as e:
+            logger.exception("check_join handler error")
+            try:
+                bot.answer_callback_query(c.id, "❌ Verification failed.", show_alert=True)
+            except:
+                pass
         return
 
-    # OPEN ISSUE -> ForceReply prompt (keep)
+    # OPEN ISSUE -> ForceReply prompt (fallback to private message if group send fails)
     if data == 'open_issue':
+        prompt = f"@{c.from_user.username or c.from_user.first_name} Please type your issue or use /issue <message>:"
+        # First try to send in the same chat
         try:
-            bot.send_message(cid, f"@{c.from_user.username or c.from_user.first_name} Please type your issue or use /issue <message>:", reply_markup=ForceReply(selective=True))
-            ack("✍️ Type your issue below.")
-        except:
-            ack("❌ Unable to open issue prompt.", alert=True)
+            bot.send_message(cid, prompt, reply_markup=ForceReply(selective=True))
+            try:
+                bot.answer_callback_query(c.id, "✍️ Type your issue below.")
+            except:
+                pass
+            return
+        except Exception as e:
+            logger.debug(f"open_issue: group send failed: {e}")
+        # Fallback: send private
+        try:
+            bot.send_message(uid, prompt, reply_markup=ForceReply(selective=True))
+            try:
+                bot.answer_callback_query(c.id, "✍️ Sent a private prompt. Check your PMs.")
+            except:
+                pass
+            # Inform in group that we've sent a PM so user knows where to reply
+            try:
+                bot.send_message(cid, f"🔔 {c.from_user.first_name}, I sent you a private prompt to report your issue.")
+            except:
+                pass
+            return
+        except Exception as e:
+            logger.exception("open_issue: private send also failed")
+            try:
+                bot.answer_callback_query(c.id, "❌ Unable to open issue prompt.", show_alert=True)
+            except:
+                pass
         return
 
     # OPEN PLANS -> send new message (not alert)
@@ -558,11 +675,14 @@ def handle_callbacks(c):
         for p in PLANS:
             txt += f"- {p['points']} pts : ₹{p['price_rs']}\n"
         txt += f"\nTo buy, contact the owner: {SUPPORT_GROUP_LINK}"
+        ok = send_text_with_fallback(cid, txt)
         try:
-            bot.send_message(cid, txt)
-            ack("Plans opened.")
+            if ok:
+                bot.answer_callback_query(c.id, "Plans opened.")
+            else:
+                bot.answer_callback_query(c.id, "❌ Could not open plans.", show_alert=True)
         except:
-            ack("❌ Could not open plans.", alert=True)
+            pass
         return
 
     # HELP / PLAY -> send new message with Back button
@@ -577,14 +697,17 @@ def handle_callbacks(c):
                f"• Last Word: +{FINISHER_POINTS} Pts")
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
+        ok = send_text_with_fallback(cid, txt, reply_markup=markup)
         try:
-            bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
-            ack("Opened play help.")
+            if ok:
+                bot.answer_callback_query(c.id, "Opened play help.")
+            else:
+                bot.answer_callback_query(c.id, "❌ Could not open play help.", show_alert=True)
         except:
-            ack("❌ Could not open play help.", alert=True)
+            pass
         return
 
-    # HELP / COMMANDS -> send new message (long text), avoid answer_callback_query alert for long text
+    # HELP / COMMANDS -> send new message (long text), try robust fallbacks
     if data == 'help_cmd':
         txt = ("<b>🤖 Command List:</b>\n\n"
                "/start, /help - Open menu\n"
@@ -614,11 +737,14 @@ def handle_callbacks(c):
                "/restart (Owner)")
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
+        ok = send_text_with_fallback(cid, txt, reply_markup=markup)
         try:
-            bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
-            ack("Opened commands.")
+            if ok:
+                bot.answer_callback_query(c.id, "Opened commands.")
+            else:
+                bot.answer_callback_query(c.id, "❌ Could not open commands.", show_alert=True)
         except:
-            ack("❌ Could not open commands.", alert=True)
+            pass
         return
 
     # LEADERBOARD -> send new message
@@ -629,20 +755,29 @@ def handle_callbacks(c):
             txt += f"{idx}. <b>{html.escape(name)}</b> : {score} pts\n"
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
+        ok = send_text_with_fallback(cid, txt, reply_markup=markup)
         try:
-            bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
-            ack("Opened leaderboard.")
+            if ok:
+                bot.answer_callback_query(c.id, "Opened leaderboard.")
+            else:
+                bot.answer_callback_query(c.id, "❌ Could not open leaderboard.", show_alert=True)
         except:
-            ack("❌ Could not open leaderboard.", alert=True)
+            pass
         return
 
     # MENU BACK -> rebuild menu as new message
     if data == 'menu_back':
         try:
             show_main_menu(c.message)  # show_main_menu will send a new menu message
-            ack("Menu opened.")
-        except:
-            ack("❌ Could not open menu.", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "Menu opened.")
+            except:
+                pass
+        except Exception:
+            try:
+                bot.answer_callback_query(c.id, "❌ Could not open menu.", show_alert=True)
+            except:
+                pass
         return
 
     # MENU STATS -> show user's stats
@@ -660,55 +795,97 @@ def handle_callbacks(c):
                    f"Games Played: {user[3]}\n"
                    f"Session Points (this chat): {session_points}\n"
                    f"Hint Balance: {user[6]}")
-            bot.send_message(cid, txt, parse_mode='HTML')
-            ack("Stats opened.")
+            ok = send_text_with_fallback(cid, txt)
+            try:
+                if ok:
+                    bot.answer_callback_query(c.id, "Stats opened.")
+                else:
+                    bot.answer_callback_query(c.id, "❌ Could not open stats.", show_alert=True)
+            except:
+                pass
         except Exception:
-            ack("❌ Could not open stats.", alert=True)
+            logger.exception("menu_stats handler error")
+            try:
+                bot.answer_callback_query(c.id, "❌ Could not open stats.", show_alert=True)
+            except:
+                pass
         return
 
     # GAME callbacks (guess/hint/score) remain same behavior
     if data == 'game_guess':
         if cid not in games:
-            ack("❌ Game Over or Expired.", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "❌ Game Over or Expired.", show_alert=True)
+            except:
+                pass
             return
         try:
             username = c.from_user.username or c.from_user.first_name
             msg = bot.send_message(cid, f"@{username} Type the word now:", reply_markup=ForceReply(selective=True))
             bot.register_next_step_handler(msg, process_word_guess)
-            ack("✍️ Type your guess.")
-        except:
-            ack("❌ Could not open input.", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "✍️ Type your guess.")
+            except:
+                pass
+        except Exception:
+            logger.exception("game_guess handler error")
+            try:
+                bot.answer_callback_query(c.id, "❌ Could not open input.", show_alert=True)
+            except:
+                pass
         return
 
     if data == 'game_hint':
         if cid not in games:
-            ack("❌ No active game.", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
+            except:
+                pass
             return
         user_data = db.get_user(uid, c.from_user.first_name)
         if user_data and user_data[6] < HINT_COST:
-            ack(f"❌ Need {HINT_COST} pts. Balance: {user_data[6]}", alert=True)
+            try:
+                bot.answer_callback_query(c.id, f"❌ Need {HINT_COST} pts. Balance: {user_data[6]}", show_alert=True)
+            except:
+                pass
             return
         game = games[cid]
         hidden = [w for w in game.words if w not in game.found]
         if not hidden:
-            ack("All words found!", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "All words found!", show_alert=True)
+            except:
+                pass
             return
         reveal = random.choice(hidden)
         db.update_stats(uid, score_delta=0, hint_delta=-HINT_COST)
         try:
             bot.send_message(cid, f"💡 <b>HINT:</b> <code>{reveal}</code>\nUser: {html.escape(c.from_user.first_name)} (-{HINT_COST} pts)")
-            ack("Hint revealed.")
-        except:
-            ack("❌ Could not send hint.", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "Hint revealed.")
+            except:
+                pass
+        except Exception:
+            logger.exception("game_hint send failed")
+            try:
+                bot.answer_callback_query(c.id, "❌ Could not send hint.", show_alert=True)
+            except:
+                pass
         return
 
     if data == 'game_score':
         if cid not in games:
-            ack("❌ No active game.", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
+            except:
+                pass
             return
         game = games[cid]
         if not game.players_scores:
-            ack("No scores yet. Be the first!", alert=True)
+            try:
+                bot.answer_callback_query(c.id, "No scores yet. Be the first!", show_alert=True)
+            except:
+                pass
             return
         leaderboard = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
         # Build rows for image (top 10)
@@ -723,22 +900,31 @@ def handle_callbacks(c):
         img_bio = LeaderboardRenderer.draw_session_leaderboard(rows[:10])
         try:
             bot.send_photo(cid, img_bio, caption="📊 Session Leaderboard")
-            ack("Leaderboard shown.")
+            try:
+                bot.answer_callback_query(c.id, "Leaderboard shown.")
+            except:
+                pass
         except:
             # fallback to text alert (short)
             txt = "📊 Session Leaderboard\n\n"
             for idx, name, pts in rows[:10]:
                 txt += f"{idx}. {html.escape(name)} - {pts} pts\n"
             # send as a message (safer than alert if long)
+            ok = send_text_with_fallback(cid, txt)
             try:
-                bot.send_message(cid, txt)
-                ack("Leaderboard opened.")
+                if ok:
+                    bot.answer_callback_query(c.id, "Leaderboard opened.")
+                else:
+                    bot.answer_callback_query(c.id, "❌ Could not show leaderboard.", show_alert=True)
             except:
-                ack("❌ Could not show leaderboard.", alert=True)
+                pass
         return
 
     # If unknown callback
-    ack()
+    try:
+        bot.answer_callback_query(c.id, "")
+    except:
+        pass
 
 # ==========================================
 # 🎮 GAME COMMANDS & core logic
@@ -766,15 +952,16 @@ def start_game(m):
         pass
     caption = (f"🔥 <b>WORD VORTEX STARTED!</b>\n"
                f"Mode: {'Hard (10x10)' if is_hard else 'Normal (8x8)'}\n"
-               f"⏱ Time Limit: 10 Minutes\n\n"
+               f"⏱ Time Limit: {session.duration//60} minutes\n\n"
                f"<b>👇 WORDS TO FIND:</b>\n"
                f"{session.get_hint_text()}")
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🔍 Found It!", callback_data='game_guess'))
     markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data='game_hint'),
                InlineKeyboardButton("📊 Score", callback_data='game_score'))
+    sent_msg = None
     try:
-        bot.send_photo(cid, img_bio, caption=caption, reply_markup=markup)
+        sent_msg = bot.send_photo(cid, img_bio, caption=caption, reply_markup=markup)
     except Exception:
         logger.exception("send_photo failed, fallback to temp file")
         try:
@@ -782,11 +969,34 @@ def start_game(m):
                 tf.write(img_bio.getvalue())
                 temp_path = tf.name
             with open(temp_path, 'rb') as f:
-                bot.send_photo(cid, f, caption=caption, reply_markup=markup)
+                sent_msg = bot.send_photo(cid, f, caption=caption, reply_markup=markup)
             try: os.unlink(temp_path)
             except: pass
         except Exception:
-            bot.send_message(cid, caption, reply_markup=markup)
+            try:
+                bot.send_message(cid, caption, reply_markup=markup)
+            except Exception:
+                logger.exception("Failed to send game start message")
+    # store message id for timer updates
+    try:
+        if sent_msg:
+            session.message_id = sent_msg.message_id
+    except Exception:
+        logger.exception("Could not set session.message_id")
+
+    # start background countdown timer for session
+    try:
+        session.start_timer()
+    except Exception:
+        logger.exception("Failed to start session timer")
+
+    # Notify owner that a game started (as requested)
+    if OWNER_ID:
+        try:
+            starter_name = m.from_user.first_name or m.from_user.username or str(m.from_user.id)
+            bot.send_message(OWNER_ID, f"🎮 Game started in chat {cid} by {starter_name} (ID: {m.from_user.id}). Mode: {'Hard' if is_hard else 'Normal'}")
+        except Exception:
+            logger.exception("Failed to notify owner about new game")
 
 @bot.message_handler(commands=['hint'])
 def hint_cmd(m):
@@ -818,7 +1028,8 @@ def report_issue(m):
         try:
             bot.send_message(OWNER_ID, f"🚨 <b>REPORT</b>\nFROM: {m.from_user.first_name} ({m.from_user.id})\nMSG: {issue}")
             bot.reply_to(m, "✅ Report sent to Developer.")
-        except:
+        except Exception:
+            logger.exception("Failed sending issue to owner")
             bot.reply_to(m, "❌ Could not send. Owner might not be reachable.")
     else:
         bot.reply_to(m, "⚠️ Owner not configured.")
@@ -1131,8 +1342,15 @@ def process_word_guess(m):
         except: pass
 
 def end_game_session(cid, reason, winner_id=None):
-    if cid not in games: return
+    if cid not in games:
+        return
     game = games[cid]
+    # mark inactive to stop timer thread
+    try:
+        game.active = False
+    except:
+        pass
+
     if reason == "win":
         winner = db.get_user(winner_id, "Unknown")
         db.update_stats(winner_id, win=True)
@@ -1152,9 +1370,40 @@ def end_game_session(cid, reason, winner_id=None):
                f"✅ All {len(game.words)} words found!\n\n"
                f"<b>Session Standings:</b>\n{summary}\n"
                f"Type <code>/new</code> to play again.")
-        bot.send_message(cid, txt)
+        try:
+            bot.send_message(cid, txt)
+        except Exception:
+            logger.exception("Failed to send win summary")
     elif reason == "stopped":
-        bot.send_message(cid, "🛑 Game stopped manually.")
+        try:
+            bot.send_message(cid, "🛑 Game stopped manually.")
+        except Exception:
+            logger.exception("Failed to send stopped message")
+    elif reason == "timeout":
+        # build timeout summary
+        found_count = len(game.found)
+        remaining = [w for w in game.words if w not in game.found]
+        top_players = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
+        summary = ""
+        for idx, (uid_score, pts) in enumerate(top_players, 1):
+            try:
+                user = db.get_user(uid_score, "Player")
+                name = user[1] if user else str(uid_score)
+            except:
+                name = str(uid_score)
+            medal = "🥇" if idx==1 else "🥈" if idx==2 else "🥉" if idx==3 else f"{idx}."
+            summary += f"{medal} <b>{html.escape(name)}</b> - {pts} pts\n"
+        rem_txt = ", ".join(remaining) if remaining else "None"
+        txt = (f"⏰ <b>TIME'S UP!</b>\n\n"
+               f"✅ Found: {found_count}/{len(game.words)} words\n"
+               f"❌ Remaining: {rem_txt}\n\n"
+               f"<b>Session Standings:</b>\n{summary}\n"
+               f"Type <code>/new</code> to play again.")
+        try:
+            bot.send_message(cid, txt)
+        except Exception:
+            logger.exception("Failed to send timeout summary")
+    # cleanup
     try:
         del games[cid]
     except KeyError:
