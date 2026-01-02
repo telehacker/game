@@ -347,8 +347,12 @@ def show_main_menu(m):
     markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
                InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
     # Row 3
-    markup.add(InlineKeyboardButton("👨‍💻 Support / Issue", url=SUPPORT_GROUP_LINK))
-    
+    # SUPPORT_GROUP_LINK may be defined elsewhere in your code/environment
+    try:
+        markup.add(InlineKeyboardButton("👨‍💻 Support / Issue", url=SUPPORT_GROUP_LINK))
+    except:
+        markup.add(InlineKeyboardButton("👨‍💻 Support / Issue", url="https://t.me/Ruhvaan"))
+
     # Send as Photo if possible, else text
     try:
         IMG_URL = "https://img.freepik.com/free-vector/word-search-game-background_23-2148066576.jpg"
@@ -413,7 +417,6 @@ def handle_callbacks(c):
         bot.edit_message_caption(txt, cid, mid, reply_markup=markup)
 
     elif c.data == 'menu_back':
-        # Yahan hum seedha function call nahi karenge, balki uska logic copy karenge
         txt = f"👋 <b>Welcome Back!</b>\nSelect an option below."
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
@@ -424,39 +427,23 @@ def handle_callbacks(c):
         
         bot.edit_message_caption(txt, cid, mid, reply_markup=markup)
 
-    # Yahan indentation bilkul LEFT margin se start honi chahiye (No spaces)
-@bot.message_handler(commands=['start', 'help'])
-def show_main_menu(m):
-    user = db.get_user(m.from_user.id, m.from_user.first_name)
-    txt = (f"👋 <b>Hello, {html.escape(m.from_user.first_name)}!</b>\n\n"
-           "🧩 <b>Welcome to Word Vortex</b>\n"
-           "The most advanced multiplayer word search bot on Telegram.\n\n"
-           "👇 <b>What would you like to do?</b>")
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
-               InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
-    markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
-               InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
-    markup.add(InlineKeyboardButton("👨‍💻 Support / Issue", url="https://t.me/Ruhvaan"))
-    
-    try:
-        IMG_URL = "https://img.freepik.com/free-vector/word-search-game-background_23-2148066576.jpg"
-        bot.send_photo(m.chat.id, IMG_URL, caption=txt, reply_markup=markup)
-    except:
-        bot.reply_to(m, txt, reply_markup=markup)
-
-    # Game Callbacks
+    # Game callbacks (placed inside the same handler so elifs are valid)
     elif c.data == 'game_guess':
         if cid not in games:
             bot.answer_callback_query(c.id, "❌ Game Over or Expired.", show_alert=True)
             return
         # Force Reply for typing
-        msg = bot.send_message(cid, f"@{c.from_user.username} Type the word now:", reply_markup=ForceReply(selective=True))
-        bot.register_next_step_handler(msg, process_word_guess)
+        try:
+            username = c.from_user.username or c.from_user.first_name
+            msg = bot.send_message(cid, f"@{username} Type the word now:", reply_markup=ForceReply(selective=True))
+            bot.register_next_step_handler(msg, process_word_guess)
+        except Exception:
+            bot.answer_callback_query(c.id, "❌ Could not start input.", show_alert=True)
         
     elif c.data == 'game_hint':
-        if cid not in games: return
+        if cid not in games:
+            bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
+            return
         user_data = db.get_user(uid, c.from_user.first_name)
         if user_data[6] < 50:
             bot.answer_callback_query(c.id, f"❌ Need 50 pts. Balance: {user_data[6]}", show_alert=True)
