@@ -412,8 +412,8 @@ def handle_callbacks(c):
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
         bot.edit_message_caption(txt, cid, mid, reply_markup=markup)
 
-      elif c.data == 'menu_back':
-        # Yahan hum seedha function call nahi karenge, balki uska logic copy karenge
+   elif c.data == 'menu_back':
+     # Yahan hum seedha function call nahi karenge, balki uska logic copy karenge
         txt = f"👋 <b>Welcome Back!</b>\nSelect an option below."
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
