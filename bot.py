@@ -23,6 +23,9 @@ from PIL import Image, ImageDraw, ImageFont
 # ⚙️ CONFIGURATION & SETUP
 # ==========================================
 
+# Initialize Flask App (YE LINE MISSING THI YA NEECHE THI)
+app = Flask(__name__)
+
 # Environment Variables (Render Friendly)
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '8325630565:AAFKPXU-eMezhm1dG_jAjRcuoLmQe-YGVoU')
 OWNER_ID = int(os.environ.get('OWNER_ID', '8271254197')) # Apna Numeric ID dalein
