@@ -414,14 +414,28 @@ def handle_callbacks(c):
 
     elif c.data == 'menu_back':
         # Re-render main menu
-        txt = f"👋 <b>Welcome Back!</b>\nSelect an option below."
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
-                   InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
-        markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
-                   InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
-        markup.add(InlineKeyboardButton("👨‍💻 Support", url='https://t.me/Ruhvaan'))
-        bot.edit_message_caption(txt, cid, mid, reply_markup=markup)
+       @bot.message_handler(commands=['start', 'help'])
+def show_main_menu(m):
+    user = db.get_user(m.from_user.id, m.from_user.first_name)
+    txt = (f"👋 <b>Hello, {html.escape(m.from_user.first_name)}!</b>\n\n"
+           "🧩 <b>Welcome to Word Vortex</b>\n"
+           "The most advanced multiplayer word search bot on Telegram.\n\n"
+           "👇 <b>What would you like to do?</b>")
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
+               InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
+    markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
+               InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
+    
+    # YAHAN DHYAN DO - Seedha Link Hai
+    markup.add(InlineKeyboardButton("👨‍💻 Support / Issue", url="https://t.me/Ruhvaan"))
+    
+    try:
+        IMG_URL = "https://img.freepik.com/free-vector/word-search-game-background_23-2148066576.jpg"
+        bot.send_photo(m.chat.id, IMG_URL, caption=txt, reply_markup=markup)
+    except:
+        bot.reply_to(m, txt, reply_markup=markup)
 
     # Game Callbacks
     elif c.data == 'game_guess':
