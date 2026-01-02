@@ -11,19 +11,17 @@ from flask import Flask
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 
 # --- CONFIGURATION ---
-# Render environment variable se token lega, fallback ke liye string rakha hai
+# Render environment variable se token lega
 TOKEN = os.environ.get('TELEGRAM_TOKEN', '8325630565:AAFKPXU-eMezhm1dG_jAjRcuoLmQe-YGVoU') 
-OWNER_ID = 8271254197  # Replace with your actual Telegram User ID
+OWNER_ID = 8271254197  # <--- APNA ASLI ID YAHAN DALO
+
 bot = telebot.TeleBot(TOKEN)
 
-# --- FLASK SERVER (For Render Port Binding) ---
+# --- FLASK SERVER (For Render Hosting) ---
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "Bot is Running!"
-
-def run_web_server():
+def home(): return "Bot is Alive & Running!"
+def run_web():
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
@@ -35,310 +33,272 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
               wins INTEGER, total_score INTEGER, hint_balance INTEGER)''')
 conn.commit()
 
-# --- WORD LIST LOADER ---
+# --- WORD LOADER & BAD WORD FILTER ---
 ALL_WORDS = []
+BAD_WORDS = ["SEX", "PORN", "NUDE", "XXX", "DICK", "COCK", "PUSSY", "FUCK", "SHIT", "BITCH", "ASS", "HENTAI"] 
+
 def load_words():
     global ALL_WORDS
     try:
         url = "https://www.mit.edu/~ecprice/wordlist.10000"
         resp = requests.get(url)
         content = resp.content.decode("utf-8")
-        # Filter for words between 4 and 9 letters
-        ALL_WORDS = [w.upper() for w in content.splitlines() if 4 <= len(w) <= 9]
-        print(f"✅ Loaded {len(ALL_WORDS)} words.")
-    except Exception as e:
-        print(f"Error loading words: {e}")
-        ALL_WORDS = ['PHYSICS', 'CHEMISTRY', 'MATHS', 'PYTHON', 'ROBOT', 'FUTURE']
+        ALL_WORDS = [w.upper() for w in content.splitlines() if 4 <= len(w) <= 9 and w.upper() not in BAD_WORDS]
+        print(f"✅ Loaded {len(ALL_WORDS)} clean words.")
+    except:
+        ALL_WORDS = ['PHYSICS', 'CHEMISTRY', 'MATHS', 'ROBOT', 'FUTURE', 'SPACE']
+threading.Thread(target=load_words).start()
 
 # --- GAME STORAGE ---
 games = {} 
 
 # --- HELPER FUNCTIONS ---
-def get_user(user_id, name):
-    try:
-        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
-        user = c.fetchone()
-        if not user:
-            # New user gets 100 hint points
-            c.execute("INSERT INTO users VALUES (?, ?, 0, 0, 0, 100)", (user_id, name))
-            conn.commit()
-            return (user_id, name, 0, 0, 0, 100)
-        return user
-    except Exception as e:
-        print(f"DB Error: {e}")
-        return (user_id, name, 0, 0, 0, 100)
-
-def update_score(user_id, points):
-    try:
-        c.execute("UPDATE users SET total_score = total_score + ?, hint_balance = hint_balance + ? WHERE user_id=?", (points, points, user_id))
+def get_user(uid, name):
+    c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
+    user = c.fetchone()
+    if not user:
+        c.execute("INSERT INTO users VALUES (?, ?, 0, 0, 0, 100)", (uid, name))
         conn.commit()
-    except: pass
+        return (uid, name, 0, 0, 0, 100)
+    return user
 
-def use_hint_points(user_id, cost):
-    try:
-        c.execute("UPDATE users SET hint_balance = hint_balance - ? WHERE user_id=?", (cost, user_id))
-        conn.commit()
-    except: pass
+def update_score(uid, pts):
+    c.execute("UPDATE users SET total_score=total_score+?, hint_balance=hint_balance+? WHERE user_id=?", (pts, pts, uid))
+    conn.commit()
 
 # --- GAME LOGIC ---
 def generate_grid(words, size=10):
-    grid = [[' ' for _ in range(size)] for _ in range(size)]
-    directions = [(0,1), (1,0), (1,1), (0,-1)] 
-    words = sorted(words, key=len, reverse=True)
+    grid = [[' ']*size for _ in range(size)]
+    dirs = [(0,1), (1,0), (1,1), (0,-1), (-1,0), (-1,-1), (-1,1), (1,-1)]
+    words.sort(key=len, reverse=True)
     
     for word in words:
         placed = False
-        attempts = 0
-        while not placed and attempts < 100:
-            attempts += 1
-            row, col = random.randint(0, size-1), random.randint(0, size-1)
-            dr, dc = random.choice(directions)
-            
-            valid = True
-            for k in range(len(word)):
-                r, c = row + k*dr, col + k*dc
-                if not (0 <= r < size and 0 <= c < size) or (grid[r][c] != ' ' and grid[r][c] != word[k]):
-                    valid = False
-                    break
-            
-            if valid:
-                for k in range(len(word)):
-                    grid[row + k*dr][col + k*dc] = word[k]
-                placed = True
-                
+        for _ in range(100):
+            r, c = random.randint(0, size-1), random.randint(0, size-1)
+            dr, dc = random.choice(dirs)
+            if all(0<=r+k*dr<size and 0<=c+k*dc<size and grid[r+k*dr][c+k*dc] in (' ', word[k]) for k in range(len(word))):
+                for k in range(len(word)): grid[r+k*dr][c+k*dc] = word[k]
+                placed = True; break
+    
     for r in range(size):
         for c in range(size):
             if grid[r][c] == ' ': grid[r][c] = random.choice(string.ascii_uppercase)
     return grid
 
-# --- COMMANDS --
+# --- PREMIUM COMMANDS ---
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    # User ka naam safe tarike se lene ke liye
     user_name = html.escape(message.from_user.first_name)
+    IMG_URL = "https://img.freepik.com/free-vector/word-search-game-background_23-2148066576.jpg" 
     
     txt = (
-        f"👋 <b>Hello {user_name}!</b> Welcome to <b>Words Grid Bot</b> 🧩\n\n"
-        "Ye ek Multiplayer Word Search Game hai. Group mein doston ke saath khelo!\n\n"
-        "🕹 <b>HOW TO PLAY? (Kaise Khele?)</b>\n"
-        "1. Group mein <code>/new</code> likho game start karne ke liye.\n"
-        "2. Grid mein words dhoondo (Horizontal, Vertical, Diagonal).\n"
-        "3. Jab word mile, <b>'🔍 I Found a Word!'</b> button dabao.\n"
-        "4. Reply mein wo word type karo (e.g., <code>ATOM</code>).\n"
-        "5. Sahi jawaab par +10 points milenge! 🏆\n\n"
-        "🛠 <b>COMMANDS MENU:</b>\n"
-        "• <code>/new</code> - Start New Game (Normal)\n"
-        "• <code>/new_hard</code> - Start Hard Mode (12x12 Grid)\n"
-        "• <code>/mystats</code> - Check Apna Score Card 📊\n"
-        "• <code>/leaderboard</code> - Top 10 Players 🥇\n"
-        "• <code>/hint</code> - Word Hint lo (Cost: 50 pts)\n"
-        "• <code>/balance</code> - Check Hint Points 💰\n"
-        "• <code>/endgame</code> - Game Roko 🛑\n\n"
-        "👨‍💻 <b>DEVELOPER INFO:</b>\n"
-        "• Creator: <b>Ruhvaan</b>\n"
-        "• Telegram: @Ruhvaan\n"
-        "• Updates: @Ruhvaan_Updates (Optional)\n\n"
-        "<i>Koi dikkat aaye to /issue likh kar message bhejo.</i>"
+        f"👋 <b>Hello {user_name}!</b>\n\n"
+        "🧩 <b>WORDS GRID ROBOT v2.0</b>\n"
+        "The Ultimate Multiplayer Word Search Game.\n\n"
+        "🕹 <b>HOW TO PLAY?</b>\n"
+        "1. Click <b>'New Game'</b>.\n"
+        "2. Find hidden words (e.g. <code>Q•••N</code>).\n"
+        "3. Click <b>'Found It!'</b> & type word.\n"
+        "4. Win Points! (⏳ 5 Mins Limit)\n\n"
+        "👇 <b>MAIN MENU:</b>"
     )
     
-    # Inline Buttons (Clickable Links)
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🎮 New Game", callback_data='btn_new'),
+               InlineKeyboardButton("🔥 Hard Mode", callback_data='btn_hard'))
+    markup.add(InlineKeyboardButton("📊 My Stats", callback_data='btn_stats'),
+               InlineKeyboardButton("🏆 Leaderboard", callback_data='btn_lb'))
+    markup.add(InlineKeyboardButton("🏅 Achievements", callback_data='btn_ach'),
+               InlineKeyboardButton("💰 Balance", callback_data='btn_bal'))
     markup.add(InlineKeyboardButton("👨‍💻 Developer (Ruhvaan)", url="https://t.me/Ruhvaan"))
-    markup.add(InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot.get_me().username}?startgroup=true"))
     
-    bot.reply_to(message, txt, parse_mode='HTML', reply_markup=markup)
+    try:
+        bot.send_photo(message.chat.id, IMG_URL, caption=txt, parse_mode='HTML', reply_markup=markup)
+    except:
+        bot.reply_to(message, txt, parse_mode='HTML', reply_markup=markup)
 
-# (Baaki functions jaise /ping, /new, /mystats waise hi rahenge...)
-
-@bot.message_handler(commands=['ping'])
-def ping(message):
-    start = time.time()
-    msg = bot.reply_to(message, "🏓 Pinging...")
-    end = time.time()
-    bot.edit_message_text(f"🏓 Pong! Latency: {round((end-start)*1000)}ms", message.chat.id, msg.message_id)
+@bot.callback_query_handler(func=lambda c: c.data.startswith('btn_'))
+def menu_callbacks(call):
+    call.message.from_user = call.from_user 
+    if call.data == 'btn_new':
+        call.message.text = "/new"
+        new_game(call.message)
+    elif call.data == 'btn_hard':
+        call.message.text = "/new_hard"
+        new_game(call.message)
+    elif call.data == 'btn_stats':
+        stats(call.message)
+    elif call.data == 'btn_lb':
+        lb(call.message)
+    elif call.data == 'btn_ach':
+        achievements(call.message)
+    elif call.data == 'btn_bal':
+        balance(call.message)
+    bot.answer_callback_query(call.id)
 
 @bot.message_handler(commands=['new', 'new_hard'])
-def new_game(message):
-    chat_id = message.chat.id
-    is_hard = 'hard' in message.text
-    size = 12 if is_hard else 10
-    count = 10 if is_hard else 6
-    
-    if not ALL_WORDS:
-        bot.reply_to(message, "⚠️ System booting... try in 5 seconds.")
-        return
+def new_game(m):
+    cid = m.chat.id
+    if cid in games:
+        if time.time() - games[cid]['start_time'] < 300: 
+            bot.reply_to(m, "⚠️ Game already running! Finish it or /endgame.")
+            return
 
+    if not ALL_WORDS: return bot.reply_to(m, "⚠️ System Booting... Try in 10s.")
+    
+    is_hard = 'hard' in m.text or 'Hard' in m.text
+    size, count = (12, 10) if is_hard else (10, 6)
     words = random.sample(ALL_WORDS, count)
     grid = generate_grid(words, size)
     
-    games[chat_id] = {
+    # --- SMART RANDOM HIDING ---
+    display_list = []
+    for w in words:
+        safe_w = html.escape(w)
+        length = len(safe_w)
+        num_visible = max(1, int(length * 0.4)) 
+        visible_indices = random.sample(range(length), num_visible)
+        
+        masked = ""
+        for i in range(length):
+            if i in visible_indices: masked += f"<b>{safe_w[i]}</b>"
+            else: masked += "•"
+        display_list.append(masked)
+    
+    safe_display = "  |  ".join(display_list)
+    
+    games[cid] = {
         'grid': grid, 'words': words, 'found': set(), 
-        'players': {}, 'mode': 'Hard' if is_hard else 'Normal'
+        'mode': 'Hard' if is_hard else 'Normal',
+        'start_time': time.time()
     }
     
-    # Using HTML for monospaced font (<code>)
-    grid_str = ""
-    for row in grid:
-        grid_str += "<code>" + " ".join(row) + "</code>\n"
-    
-    # Escaping words just in case
-    safe_words = [html.escape(w) for w in words]
-    words_display = ", ".join(safe_words)
+    grid_str = "\n".join(["<code>" + " ".join(row) + "</code>" for row in grid])
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🔍 I Found a Word!", callback_data='guess'))
     
-    msg_text = f"<b>🧩 {games[chat_id]['mode']} Game Started!</b>\n\n{grid_str}\n\n📝 <b>Find:</b> {words_display}"
+    bot.send_message(cid, f"🧩 <b>{games[cid]['mode']} Game!</b> (⏱ 5 Mins)\n\n{grid_str}\n\n📝 <b>Find:</b> {safe_display}", 
+                     parse_mode='HTML', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda c: c.data == 'guess')
+def guess_click(call):
+    cid = call.message.chat.id
+    if cid not in games: return bot.answer_callback_query(call.id, "Game Expired!", show_alert=True)
+    if time.time() - games[cid]['start_time'] > 300:
+        del games[cid]
+        return bot.answer_callback_query(call.id, "⏰ Time's Up!", show_alert=True)
+
+    msg = bot.send_message(cid, f"@{call.from_user.username} Type the word:", reply_markup=ForceReply(selective=True))
+    bot.register_next_step_handler(msg, check_word)
+
+def check_word(m):
+    cid = m.chat.id
+    if cid not in games: return
     
-    bot.send_message(chat_id, msg_text, parse_mode='HTML', reply_markup=markup)
-
-@bot.message_handler(commands=['mystats', 'balance', 'scorecard'])
-def my_stats(message):
-    uid = message.from_user.id
-    user = get_user(uid, message.from_user.first_name)
-    # Plain text response is safer
-    txt = (
-        f"👤 Player Profile: {user[1]}\n"
-        f"🎮 Games Played: {user[2]}\n"
-        f"🏆 Wins: {user[3]}\n"
-        f"💰 Hint Balance: {user[5]} pts\n"
-        f"⭐️ Total Score: {user[4]}"
-    )
-    bot.reply_to(message, txt)
-
-@bot.message_handler(commands=['leaderboard'])
-def leaderboard(message):
-    try:
-        c.execute("SELECT name, total_score FROM users ORDER BY total_score DESC LIMIT 10")
-        top = c.fetchall()
-        if not top:
-            bot.reply_to(message, "No data yet.")
-            return
+    word = m.text.strip().upper()
+    game = games[cid]
+    
+    if word in game['words'] and word not in game['found']:
+        game['found'].add(word)
+        get_user(m.from_user.id, m.from_user.first_name)
+        update_score(m.from_user.id, 10)
         
-        txt = "🏆 Global Leaderboard\n\n" + "\n".join([f"{i+1}. {r[0]} - {r[1]} pts" for i, r in enumerate(top)])
-        bot.reply_to(message, txt)
-    except:
-        bot.reply_to(message, "Error fetching leaderboard.")
+        reply = bot.reply_to(m, f"✨ <b>Excellent!</b> {html.escape(m.from_user.first_name)} found <code>{word}</code> (+10 pts) 🎯", parse_mode='HTML')
+        
+        try:
+            threading.Timer(5.0, lambda: bot.delete_message(cid, reply.message_id)).start()
+            bot.delete_message(cid, m.message_id) 
+        except: pass
+        
+        if len(game['found']) == len(game['words']):
+            c.execute("UPDATE users SET wins=wins+1 WHERE user_id=?", (m.from_user.id,))
+            conn.commit()
+            bot.send_message(cid, f"🎉 <b>GAME WON!</b>\nWinner: {html.escape(m.from_user.first_name)} (+50 Bonus) 🏆", parse_mode='HTML')
+            del games[cid]
+
+@bot.message_handler(commands=['issue'])
+def issue(m):
+    issue_txt = m.text.replace("/issue", "").strip()
+    if not issue_txt: return bot.reply_to(m, "Usage: `/issue My issue here`")
+    
+    if OWNER_ID and isinstance(OWNER_ID, int):
+        bot.send_message(OWNER_ID, f"🚨 <b>ISSUE</b>\n👤: {m.from_user.first_name}\n💬: {issue_txt}", parse_mode='HTML')
+        bot.reply_to(m, "✅ Sent to Ruhvaan!")
+    else:
+        bot.reply_to(m, "❌ Config Error.")
 
 @bot.message_handler(commands=['hint'])
-def get_hint(message):
-    chat_id = message.chat.id
-    uid = message.from_user.id
+def hint(m):
+    cid = m.chat.id
+    if cid not in games: return bot.reply_to(m, "Start game first.")
+    u = get_user(m.from_user.id, m.from_user.first_name)
+    if u[5] < 50: return bot.reply_to(m, f"❌ Need 50 pts. (Bal: {u[5]})")
     
-    if chat_id not in games:
-        return bot.reply_to(message, "❌ No active game.")
-        
-    user = get_user(uid, message.from_user.first_name)
-    if user[5] < 50:
-        return bot.reply_to(message, f"❌ Not enough points! You have {user[5]}, need 50.")
-    
-    game = games[chat_id]
-    hidden = [w for w in game['words'] if w not in game['found']]
-    if not hidden:
-        return bot.reply_to(message, "All words found already!")
-        
-    reveal = random.choice(hidden)
-    use_hint_points(uid, 50)
-    bot.reply_to(message, f"💡 HINT: Look for the word: {reveal} (-50 pts)")
+    hidden = [w for w in games[cid]['words'] if w not in games[cid]['found']]
+    if hidden:
+        c.execute("UPDATE users SET hint_balance=hint_balance-50 WHERE user_id=?", (m.from_user.id,))
+        conn.commit()
+        bot.reply_to(m, f"💡 Hint: <b>{random.choice(hidden)}</b>", parse_mode='HTML')
 
-@bot.message_handler(commands=['define'])
-def define_word(message):
-    try:
-        if len(message.text.split()) < 2:
-             bot.reply_to(message, "Use format: /define <word>")
-             return
-        word = message.text.split()[1]
-        resp = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}")
-        data = resp.json()
-        definition = data[0]['meanings'][0]['definitions'][0]['definition']
-        bot.reply_to(message, f"📖 {word.upper()}: {definition}")
-    except:
-        bot.reply_to(message, "❌ Definition not found.")
+@bot.message_handler(commands=['mystats'])
+def stats(m):
+    u = get_user(m.from_user.id, m.from_user.first_name)
+    bot.reply_to(m, f"👤 <b>{html.escape(u[1])}</b>\n🏆 Wins: {u[3]}\n⭐️ Score: {u[4]}\n💰 Hints: {u[5]}", parse_mode='HTML')
+
+@bot.message_handler(commands=['balance'])
+def balance(m):
+    u = get_user(m.from_user.id, m.from_user.first_name)
+    bot.reply_to(m, f"💰 <b>Hint Balance:</b> {u[5]} Points", parse_mode='HTML')
+
+@bot.message_handler(commands=['leaderboard'])
+def lb(m):
+    c.execute("SELECT name, total_score FROM users ORDER BY total_score DESC LIMIT 10")
+    top = c.fetchall()
+    txt = "\n".join([f"{i+1}. {r[0]} - {r[1]}" for i,r in enumerate(top)]) if top else "No data."
+    bot.reply_to(m, f"🏆 <b>Leaderboard</b>\n{txt}", parse_mode='HTML')
+
+@bot.message_handler(commands=['ping'])
+def ping(m):
+    s = time.time()
+    msg = bot.reply_to(m, "🏓 Pinging...")
+    bot.edit_message_text(f"🏓 Pong! {round((time.time()-s)*1000)}ms", m.chat.id, msg.message_id)
 
 @bot.message_handler(commands=['achievements'])
-def achievements(message):
-    uid = message.from_user.id
-    user = get_user(uid, message.from_user.first_name)
-    wins = user[3]
-    
+def achievements(m):
+    u = get_user(m.from_user.id, m.from_user.first_name)
+    wins = u[3]
     badges = []
     if wins >= 1: badges.append("🥉 Beginner")
     if wins >= 10: badges.append("🥈 Pro Player")
     if wins >= 50: badges.append("🥇 Word Master")
-    if user[4] > 1000: badges.append("💎 Rich Kid")
-    
-    txt = f"🏅 Achievements for {user[1]}\n\n" + ("\n".join(badges) if badges else "No badges yet. Keep playing!")
-    bot.reply_to(message, txt)
+    if u[4] > 1000: badges.append("💎 Rich Kid")
+    txt = "\n".join(badges) if badges else "Play more to unlock!"
+    bot.reply_to(m, f"🏅 <b>Badges:</b>\n{txt}", parse_mode='HTML')
 
 @bot.message_handler(commands=['status'])
-def system_status(message):
-    if message.from_user.id != OWNER_ID: return
+def status(m):
+    if m.from_user.id != OWNER_ID: return
     c.execute("SELECT COUNT(*) FROM users")
-    users_count = c.fetchone()[0]
-    bot.reply_to(message, f"⚙️ System Status\nActive Games: {len(games)}\nTotal Users: {users_count}\nDatabase: Online")
+    bot.reply_to(m, f"⚙️ <b>System Status</b>\nActive Games: {len(games)}\nTotal Users: {c.fetchone()[0]}", parse_mode='HTML')
 
-@bot.message_handler(commands=['issue'])
-def report_issue(message):
-    issue = message.text.replace("/issue", "").strip()
-    if issue:
-        # Check if OWNER_ID is set
-        if OWNER_ID:
-            bot.send_message(OWNER_ID, f"🚨 Issue Report\nFrom: {message.from_user.first_name}\nIssue: {issue}")
-        bot.reply_to(message, "✅ Report sent to developer!")
-    else:
-        bot.reply_to(message, "Write issue after command. Ex: `/issue Bot is slow`")
+@bot.message_handler(commands=['settings'])
+def settings(m):
+    if m.from_user.id != OWNER_ID: return
+    bot.reply_to(m, "⚙️ <b>Settings:</b>\nOnly Admin can view this.\n- Maintenance: OFF\n- Debug: OFF", parse_mode='HTML')
 
-@bot.message_handler(commands=['endgame'])
-def end_game(message):
-    chat_id = message.chat.id
-    if chat_id in games:
-        del games[chat_id]
-        bot.reply_to(message, "🛑 Game stopped.")
-    else:
-        bot.reply_to(message, "No active game.")
+@bot.message_handler(commands=['define'])
+def define(m):
+    try:
+        word = m.text.split()[1]
+        d = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}").json()[0]['meanings'][0]['definitions'][0]['definition']
+        bot.reply_to(m, f"📖 <b>{word.upper()}:</b> {d}", parse_mode='HTML')
+    except: bot.reply_to(m, "❌ Not found.")
 
-# --- CALLBACKS & GAMEPLAY ---
-@bot.callback_query_handler(func=lambda call: call.data == 'guess')
-def guess_callback(call):
-    msg = bot.send_message(call.message.chat.id, f"@{call.from_user.username} Type the word:", reply_markup=ForceReply(selective=True))
-    bot.register_next_step_handler(msg, check_word_logic)
-
-def check_word_logic(message):
-    chat_id = message.chat.id
-    if chat_id not in games: return
-    
-    word = message.text.strip().upper()
-    game = games[chat_id]
-    
-    # Ensure user exists in DB before updating score
-    get_user(message.from_user.id, message.from_user.first_name)
-    
-    if word in game['words'] and word not in game['found']:
-        game['found'].add(word)
-        # Update Score: +10 pts for finding word
-        update_score(message.from_user.id, 10)
-        
-        # Use HTML for bold text to avoid underscore errors
-        safe_name = html.escape(message.from_user.first_name)
-        bot.reply_to(message, f"✅ <b>{word} Found!</b> (+10 pts)", parse_mode='HTML')
-        
-        if len(game['found']) == len(game['words']):
-            c.execute("UPDATE users SET wins = wins + 1 WHERE user_id=?", (message.from_user.id,))
-            conn.commit()
-            bot.send_message(chat_id, f"🎉 <b>GAME OVER!</b>\nWinner: {safe_name}\n+50 Bonus Points!", parse_mode='HTML')
-            del games[chat_id]
-
-# --- MAIN EXECUTION ---
+# --- MAIN LOOP ---
 if __name__ == '__main__':
-    # 1. Load Words
-    t1 = threading.Thread(target=load_words)
-    t1.start()
-    
-    # 2. Start Web Server (For Render)
-    t2 = threading.Thread(target=run_web_server)
-    t2.start()
-    
-    # 3. Start Bot Polling
-    print("Bot Started...")
+    threading.Thread(target=run_web).start()
+    print("Bot is Premium & Live! 🚀")
     bot.infinity_polling()
