@@ -111,30 +111,45 @@ def generate_grid(words, size=10):
             if grid[r][c] == ' ': grid[r][c] = random.choice(string.ascii_uppercase)
     return grid
 
-# --- COMMANDS ---
+# --- COMMANDS --
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    # Removing Markdown to avoid crashes with underscores
+    # User ka naam safe tarike se lene ke liye
+    user_name = html.escape(message.from_user.first_name)
+    
     txt = (
-        "🎮 Words Grid Bot Help Menu\n\n"
-        "🕹 Game Commands:\n"
-        "/new - Start new game\n"
-        "/new_hard - Start Hard Mode (12x12)\n"
-        "/endgame - Stop current game\n"
-        "/hint - Get a hint (Cost: 50 pts)\n\n"
-        "📊 Stats & Tools:\n"
-        "/mystats - Your profile stats\n"
-        "/leaderboard - Top players\n"
-        "/balance - Check hint points\n"
-        "/achievements - Your badges\n"
-        "/define <word> - Get definition\n\n"
-        "⚙️ System:\n"
-        "/ping - Check bot speed\n"
-        "/issue <msg> - Report bug\n"
-        "/status - Bot health (Owner only)"
+        f"👋 <b>Hello {user_name}!</b> Welcome to <b>Words Grid Bot</b> 🧩\n\n"
+        "Ye ek Multiplayer Word Search Game hai. Group mein doston ke saath khelo!\n\n"
+        "🕹 <b>HOW TO PLAY? (Kaise Khele?)</b>\n"
+        "1. Group mein <code>/new</code> likho game start karne ke liye.\n"
+        "2. Grid mein words dhoondo (Horizontal, Vertical, Diagonal).\n"
+        "3. Jab word mile, <b>'🔍 I Found a Word!'</b> button dabao.\n"
+        "4. Reply mein wo word type karo (e.g., <code>ATOM</code>).\n"
+        "5. Sahi jawaab par +10 points milenge! 🏆\n\n"
+        "🛠 <b>COMMANDS MENU:</b>\n"
+        "• <code>/new</code> - Start New Game (Normal)\n"
+        "• <code>/new_hard</code> - Start Hard Mode (12x12 Grid)\n"
+        "• <code>/mystats</code> - Check Apna Score Card 📊\n"
+        "• <code>/leaderboard</code> - Top 10 Players 🥇\n"
+        "• <code>/hint</code> - Word Hint lo (Cost: 50 pts)\n"
+        "• <code>/balance</code> - Check Hint Points 💰\n"
+        "• <code>/endgame</code> - Game Roko 🛑\n\n"
+        "👨‍💻 <b>DEVELOPER INFO:</b>\n"
+        "• Creator: <b>Ruhvaan</b>\n"
+        "• Telegram: @Ruhvaan\n"
+        "• Updates: @Ruhvaan_Updates (Optional)\n\n"
+        "<i>Koi dikkat aaye to /issue likh kar message bhejo.</i>"
     )
-    bot.reply_to(message, txt)
+    
+    # Inline Buttons (Clickable Links)
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("👨‍💻 Developer (Ruhvaan)", url="https://t.me/Ruhvaan"))
+    markup.add(InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot.get_me().username}?startgroup=true"))
+    
+    bot.reply_to(message, txt, parse_mode='HTML', reply_markup=markup)
+
+# (Baaki functions jaise /ping, /new, /mystats waise hi rahenge...)
 
 @bot.message_handler(commands=['ping'])
 def ping(message):
