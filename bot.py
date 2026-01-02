@@ -591,8 +591,7 @@ def handle_callbacks(c):
             bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
             ack("Opened commands.")
         except:
-            ack("❌ Could not open commands.", alert=True)
-        return
+            
 
     # LEADERBOARD -> send new message
     if data == 'menu_lb':
