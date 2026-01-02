@@ -1,8 +1,8 @@
-# (Full file — only the relevant image-send fixes were added)
+#!/usr/bin/env python3
 """
 WORDS GRID ROBOT - ULTIMATE PREMIUM EDITION
-Version: 5.0 (Enterprise) - BUTTONS FIX, PUZZLE IMAGE, JOIN BUTTON
-Developer: Ruhvaan
+Version: 5.0 (Enterprise) - Admins, Settings, Restart, Scoreboard Image, /define
+Developer: Ruhvaan (updated)
 """
 
 import telebot
@@ -13,13 +13,14 @@ import threading
 import sqlite3
 import time
 import os
+import sys
 import html
 import io
 import logging
+import tempfile
 from flask import Flask
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from PIL import Image, ImageDraw, ImageFont
-import tempfile
 
 # ==========================================
 # ⚙️ CONFIGURATION & SETUP
@@ -27,7 +28,7 @@ import tempfile
 
 app = Flask(__name__)
 
-TOKEN = os.environ.get('TELEGRAM_TOKEN', '8208557623:AAETc5E4MQIxYscfSHy4emnhkniqUbgIbag')
+TOKEN = os.environ.get('TELEGRAM_TOKEN', '8208557623:AAGFc8z-y4jPkudON9B0dqlRkeXYFJfVtjY')
 try:
     OWNER_ID = int(os.environ.get('OWNER_ID', '8271254197'))
 except Exception:
@@ -44,6 +45,11 @@ bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Scoring constants
+FIRST_BLOOD_POINTS = 10
+NORMAL_POINTS = 2
+FINISHER_POINTS = 5
+
 BAD_WORDS = {"SEX", "PORN", "NUDE", "XXX", "DICK", "COCK", "PUSSY", "FUCK", "SHIT", "BITCH", "ASS", "HENTAI", "BOOBS"}
 GAME_DURATION = 600
 COOLDOWN = 2
@@ -57,7 +63,7 @@ PLANS = [
 ]
 
 # ==========================================
-# 🗄️ DATABASE MANAGER
+# 🗄️ DATABASE MANAGER (includes admins)
 # ==========================================
 class DatabaseManager:
     def __init__(self, db_name='wordsgrid_premium.db'):
@@ -70,6 +76,7 @@ class DatabaseManager:
     def init_db(self):
         conn = self.connect()
         c = conn.cursor()
+        # users table
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             name TEXT,
@@ -80,6 +87,11 @@ class DatabaseManager:
             hint_balance INTEGER DEFAULT 100,
             is_banned INTEGER DEFAULT 0
         )''')
+        # admins table
+        c.execute('''CREATE TABLE IF NOT EXISTS admins (
+            admin_id INTEGER PRIMARY KEY
+        )''')
+        # game_history
         c.execute('''CREATE TABLE IF NOT EXISTS game_history (
             game_id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER,
@@ -89,6 +101,7 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    # User helpers
     def get_user(self, user_id, name):
         conn = self.connect()
         c = conn.cursor()
@@ -116,6 +129,47 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    # Admin helpers
+    def add_admin(self, admin_id):
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO admins (admin_id) VALUES (?)", (admin_id,))
+        conn.commit()
+        conn.close()
+
+    def remove_admin(self, admin_id):
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("DELETE FROM admins WHERE admin_id=?", (admin_id,))
+        conn.commit()
+        conn.close()
+
+    def is_admin(self, user_id):
+        if OWNER_ID and user_id == OWNER_ID:
+            return True
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("SELECT admin_id FROM admins WHERE admin_id=?", (user_id,))
+        res = c.fetchone()
+        conn.close()
+        return bool(res)
+
+    def list_admins(self):
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("SELECT admin_id FROM admins")
+        data = [r[0] for r in c.fetchall()]
+        conn.close()
+        return data
+
+    def record_game(self, chat_id, winner_id):
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("INSERT INTO game_history (chat_id, winner_id, timestamp) VALUES (?, ?, ?)",
+                  (chat_id, winner_id, time.strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+
     def get_top_players(self, limit=10):
         conn = self.connect()
         c = conn.cursor()
@@ -132,52 +186,30 @@ class DatabaseManager:
         conn.close()
         return data
 
-    def toggle_ban(self, user_id, status):
-        conn = self.connect()
-        c = conn.cursor()
-        c.execute("UPDATE users SET is_banned = ? WHERE user_id=?", (status, user_id))
-        conn.commit()
-        conn.close()
-
-    def record_game(self, chat_id, winner_id):
-        conn = self.connect()
-        c = conn.cursor()
-        c.execute("INSERT INTO game_history (chat_id, winner_id, timestamp) VALUES (?, ?, ?)",
-                  (chat_id, winner_id, time.strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        conn.close()
-
 db = DatabaseManager()
 
 # ==========================================
-# 🎨 IMAGE GENERATOR
+# 🎨 Image Utilities
+# - GridRenderer (same as before)
+# - LeaderboardRenderer: draw nice scoreboard image for sessions
 # ==========================================
 class GridRenderer:
     @staticmethod
     def draw(grid, is_hard=False):
-        # Configuration
         cell_size = 60
         header_height = 100
         footer_height = 50
         padding = 30
-        
         rows = len(grid)
         cols = len(grid[0]) if rows else 0
-        
         width = (cols * cell_size) + (padding * 2)
         height = (rows * cell_size) + header_height + footer_height + (padding * 2)
-        
-        # Colors
         BG_COLOR = "#FFFFFF"
         GRID_COLOR = "#3498db"
         TEXT_COLOR = "#2c3e50"
         HEADER_BG = "#ecf0f1"
-        
-        # Create Canvas
         img = Image.new('RGB', (width, height), BG_COLOR)
         draw = ImageDraw.Draw(img)
-        
-        # Load Fonts
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
             if not os.path.exists(font_path): font_path = "arial.ttf"
@@ -188,58 +220,74 @@ class GridRenderer:
             letter_font = ImageFont.load_default()
             header_font = ImageFont.load_default()
             footer_font = ImageFont.load_default()
-
-        # Draw Header
         draw.rectangle([0, 0, width, header_height], fill=HEADER_BG)
         title_text = "WORD VORTEX"
         bbox = draw.textbbox((0,0), title_text, font=header_font)
         tw = bbox[2] - bbox[0]
         draw.text(((width - tw)/2, 30), title_text, fill="#2980b9", font=header_font)
-        
-        # Draw Mode Subtitle
         mode_text = "HARD MODE" if is_hard else "NORMAL MODE"
         bbox2 = draw.textbbox((0,0), mode_text, font=footer_font)
         tw2 = bbox2[2] - bbox2[0]
         draw.text(((width - tw2)/2, 75), mode_text, fill="#7f8c8d", font=footer_font)
-
-        # Draw Grid
         grid_start_y = header_height + padding
-        
         for r in range(rows):
             for c in range(cols):
                 x = padding + (c * cell_size)
                 y = grid_start_y + (r * cell_size)
-                
-                # Draw Box
                 shape = [x, y, x + cell_size, y + cell_size]
                 draw.rectangle(shape, outline=GRID_COLOR, width=2)
-                
-                # Draw Letter
                 char = grid[r][c]
                 bbox_char = draw.textbbox((0,0), char, font=letter_font)
                 cw = bbox_char[2] - bbox_char[0]
                 ch = bbox_char[3] - bbox_char[1]
-                
-                # Center text perfectly
                 draw.text((x + (cell_size - cw)/2, y + (cell_size - ch)/2 - 5), char, fill=TEXT_COLOR, font=letter_font)
-
-        # Draw Footer
-        draw.text((padding, height - 30), "Made by @Ruhvaan", fill="#95a5a6", font=footer_font)
+        draw.text((30, height - 30), "Made by @Ruhvaan", fill="#95a5a6", font=footer_font)
         draw.text((width - 100, height - 30), "v5.0", fill="#95a5a6", font=footer_font)
-
-        # Output
         bio = io.BytesIO()
         img.save(bio, 'JPEG', quality=95)
         bio.seek(0)
-        # Important: give BytesIO a name attribute so telebot treats it as a file
         try:
             bio.name = 'grid.jpg'
-        except Exception:
+        except:
+            pass
+        return bio
+
+class LeaderboardRenderer:
+    @staticmethod
+    def draw_session_leaderboard(rows):
+        # rows: list of tuples (rank_index, name, score)
+        width = 700
+        height = max(120, 60 + 50 * len(rows))
+        bg = Image.new('RGB', (width, height), '#0f1724')  # dark
+        draw = ImageDraw.Draw(bg)
+        try:
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            if not os.path.exists(font_path): font_path = "arial.ttf"
+            title_font = ImageFont.truetype(font_path, 28)
+            row_font = ImageFont.truetype(font_path, 22)
+        except:
+            title_font = ImageFont.load_default()
+            row_font = ImageFont.load_default()
+        # Title
+        draw.text((20, 10), "Session Leaderboard", fill="#FFD700", font=title_font)
+        y = 50
+        for idx, name, pts in rows:
+            medal = "🥇" if idx==1 else "🥈" if idx==2 else "🥉" if idx==3 else f"{idx}."
+            draw.text((20, y), f"{medal}", fill="#FFFFFF", font=row_font)
+            draw.text((80, y), f"{name}", fill="#FFFFFF", font=row_font)
+            draw.text((width - 120, y), f"{pts} pts", fill="#7be495", font=row_font)
+            y += 40
+        bio = io.BytesIO()
+        bg.save(bio, 'PNG', quality=90)
+        bio.seek(0)
+        try:
+            bio.name = 'leaders.png'
+        except:
             pass
         return bio
 
 # ==========================================
-# 🧠 GAME LOGIC ENGINE
+# 🧠 WORDS + GAME SESSION
 # ==========================================
 ALL_WORDS = []
 
@@ -258,7 +306,7 @@ def fetch_words():
 
 fetch_words()
 
-games = {}
+games = {}  # chat_id -> GameSession
 
 class GameSession:
     def __init__(self, chat_id, is_hard=False):
@@ -271,7 +319,7 @@ class GameSession:
         self.words = []
         self.found = set()
         self.grid = []
-        self.players_scores = {}
+        self.players_scores = {}  # uid -> points
         self.players_last_guess = {}
         self.generate()
 
@@ -320,7 +368,7 @@ class GameSession:
         return "\n".join(hints)
 
 # ==========================================
-# 🛡️ UTILS
+# 🛡️ HELPERS & PERMISSIONS
 # ==========================================
 def is_subscribed(user_id):
     if not FORCE_JOIN:
@@ -347,19 +395,55 @@ def require_subscription(func):
         return func(message)
     return wrapper
 
+def is_admin_or_owner(user_id):
+    return (OWNER_ID and user_id == OWNER_ID) or db.is_admin(user_id)
+
+def owner_only(func):
+    def wrapper(m):
+        if m.from_user.id != OWNER_ID:
+            bot.reply_to(m, "❌ Only owner can use this.")
+            return
+        return func(m)
+    return wrapper
+
+def admin_only(func):
+    def wrapper(m):
+        if not is_admin_or_owner(m.from_user.id):
+            bot.reply_to(m, "❌ Only owner or admin can use this.")
+            return
+        return func(m)
+    return wrapper
+
 def safe_edit_message(caption, cid, mid, reply_markup=None):
+    # robust edit fallback
     try:
         bot.edit_message_caption(caption, chat_id=cid, message_id=mid, reply_markup=reply_markup)
         return True
     except Exception:
+        pass
+    try:
+        bot.edit_message_caption(caption, cid, mid, reply_markup=reply_markup)
+        return True
+    except Exception:
+        pass
+    try:
+        bot.edit_message_text(caption, chat_id=cid, message_id=mid, reply_markup=reply_markup, parse_mode='HTML')
+        return True
+    except Exception:
+        pass
+    try:
+        bot.send_message(cid, caption, reply_markup=reply_markup, parse_mode='HTML')
         try:
-            bot.edit_message_text(caption, chat_id=cid, message_id=mid, reply_markup=reply_markup, parse_mode='HTML')
-            return True
-        except Exception:
-            return False
+            bot.delete_message(cid, mid)
+        except:
+            pass
+        return True
+    except Exception:
+        logger.exception("safe_edit_message: all edit/send attempts failed")
+        return False
 
 # ==========================================
-# 🎮 HANDLERS (MAIN MENU & CALLBACKS)
+# 🎮 HANDLERS & MENU
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def show_main_menu(m):
@@ -381,7 +465,6 @@ def show_main_menu(m):
     try:
         bot.send_photo(m.chat.id, START_IMG_URL, caption=txt, reply_markup=markup)
     except Exception:
-        # If remote URL fails to send, fallback to simple text menu
         logger.exception("Failed to send START_IMG_URL; falling back to text menu")
         bot.reply_to(m, txt, reply_markup=markup)
 
@@ -395,10 +478,8 @@ def handle_callbacks(c):
     if data == "check_join":
         if is_subscribed(uid):
             bot.answer_callback_query(c.id, "✅ Verified! Welcome.", show_alert=True)
-            try:
-                bot.delete_message(cid, mid)
-            except:
-                pass
+            try: bot.delete_message(cid, mid)
+            except: pass
             show_main_menu(c.message)
         else:
             bot.answer_callback_query(c.id, "❌ You haven't joined yet!", show_alert=True)
@@ -408,7 +489,7 @@ def handle_callbacks(c):
         try:
             bot.answer_callback_query(c.id, "✍️ Please type your issue below.", show_alert=False)
             bot.send_message(cid, f"@{c.from_user.username or c.from_user.first_name} Please type your issue or use /issue <message>:", reply_markup=ForceReply(selective=True))
-        except:
+        except Exception:
             bot.answer_callback_query(c.id, "❌ Unable to open issue prompt.", show_alert=True)
         return
 
@@ -417,7 +498,10 @@ def handle_callbacks(c):
         for p in PLANS:
             txt += f"- {p['points']} pts : ₹{p['price_rs']}\n"
         txt += f"\nTo buy, contact the owner: {SUPPORT_GROUP_LINK}"
-        bot.answer_callback_query(c.id, txt, show_alert=True)
+        try:
+            bot.answer_callback_query(c.id, txt, show_alert=True)
+        except:
+            safe_edit_message(txt, cid, mid, reply_markup=None)
         return
 
     if data == 'help_play':
@@ -426,14 +510,18 @@ def handle_callbacks(c):
                "2️⃣ <b>Search:</b> Look at the image grid carefully.\n"
                "3️⃣ <b>Solve:</b> Click 'Found It' & type the word.\n\n"
                "<b>🏆 Scoring Rules:</b>\n"
-               "• First Word: +3 Pts\n"
-               "• Normal Word: +2 Pts\n"
-               "• Last Word: +5 Pts")
+               f"• First Word: +{FIRST_BLOOD_POINTS} Pts\n"
+               f"• Normal Word: +{NORMAL_POINTS} Pts\n"
+               f"• Last Word: +{FINISHER_POINTS} Pts")
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
         success = safe_edit_message(txt, cid, mid, reply_markup=markup)
         if not success:
-            bot.answer_callback_query(c.id, "❌ Could not open play help.", show_alert=True)
+            try:
+                bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
+                bot.answer_callback_query(c.id, "Opened in new message", show_alert=False)
+            except:
+                bot.answer_callback_query(c.id, "❌ Could not open play help.", show_alert=True)
         else:
             bot.answer_callback_query(c.id, "Opened.", show_alert=False)
         return
@@ -443,7 +531,8 @@ def handle_callbacks(c):
                "/start, /help - Open menu\n"
                "/ping - Check bot ping\n"
                "/new - Start a game\n"
-               "/new_hard - Start hard game\n               /hint - Buy hint (-50)\n"
+               "/new_hard - Start hard game\n"
+               "/hint - Buy hint (-50)\n"
                "/endgame - Stop the game\n"
                "/mystats - View profile\n"
                "/balance - Check hint balance\n"
@@ -455,12 +544,24 @@ def handle_callbacks(c):
                "/achievements - Your achievements\n"
                "/status - Bot stats (Owner)\n"
                "/settings - Bot settings (Owner)\n"
-               "/addpoints <username_or_id> <amount> (Owner)")
+               "/addpoints <username_or_id> <amount> [balance|score] (Owner)\n"
+               "/addadmin <username_or_id> (Owner)\n"
+               "/deladmin <username_or_id> (Owner)\n"
+               "/admins - list admins\n"
+               "/set_hint_cost <amount> (Owner)\n"
+               "/toggle_force_join (Owner)\n"
+               "/set_start_image <url> (Owner)\n"
+               "/show_settings (Owner)\n"
+               "/restart (Owner)")
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
         success = safe_edit_message(txt, cid, mid, reply_markup=markup)
         if not success:
-            bot.answer_callback_query(c.id, "❌ Could not open commands.", show_alert=True)
+            try:
+                bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
+                bot.answer_callback_query(c.id, "Opened in new message", show_alert=False)
+            except:
+                bot.answer_callback_query(c.id, "❌ Could not open commands.", show_alert=True)
         return
 
     if data == 'menu_lb':
@@ -470,10 +571,17 @@ def handle_callbacks(c):
             txt += f"{idx}. <b>{html.escape(name)}</b> : {score} pts\n"
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
-        safe_edit_message(txt, cid, mid, reply_markup=markup)
+        success = safe_edit_message(txt, cid, mid, reply_markup=markup)
+        if not success:
+            try:
+                bot.send_message(cid, txt, reply_markup=markup, parse_mode='HTML')
+                bot.answer_callback_query(c.id, "Opened leaderboard", show_alert=False)
+            except:
+                bot.answer_callback_query(c.id, "❌ Could not open leaderboard.", show_alert=True)
         return
 
-    if data == 'menu_stats' or data == 'menu_back':
+    if data in ('menu_stats', 'menu_back'):
+        # rebuild main menu in place
         txt = (f"👋 <b>Welcome Back!</b>\nSelect an option below.")
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
@@ -487,7 +595,7 @@ def handle_callbacks(c):
         safe_edit_message(txt, cid, mid, reply_markup=markup)
         return
 
-    # Game callbacks: guess, hint, score
+    # Game callbacks
     if data == 'game_guess':
         if cid not in games:
             bot.answer_callback_query(c.id, "❌ Game Over or Expired.", show_alert=True)
@@ -497,7 +605,7 @@ def handle_callbacks(c):
             msg = bot.send_message(cid, f"@{username} Type the word now:", reply_markup=ForceReply(selective=True))
             bot.register_next_step_handler(msg, process_word_guess)
             bot.answer_callback_query(c.id, "✍️ Type your guess.", show_alert=False)
-        except:
+        except Exception:
             bot.answer_callback_query(c.id, "❌ Could not open input.", show_alert=True)
         return
 
@@ -528,21 +636,30 @@ def handle_callbacks(c):
         if not game.players_scores:
             bot.answer_callback_query(c.id, "No scores yet. Be the first!", show_alert=True)
             return
+        # Build rows for image
         leaderboard = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
-        txt = "📊 <b>Session Leaderboard</b>\n\n"
-        for idx, (uid_score, pts) in enumerate(leaderboard, 1):
+        rows = []
+        for i, (uid_score, pts) in enumerate(leaderboard, 1):
             try:
                 user = db.get_user(uid_score, "Player")
                 name = user[1] if user else str(uid_score)
             except:
                 name = str(uid_score)
-            medal = "🥇" if idx==1 else "🥈" if idx==2 else "🥉" if idx==3 else f"{idx}."
-            txt += f"{medal} <b>{html.escape(name)}</b> - {pts} pts\n"
-        bot.answer_callback_query(c.id, txt, show_alert=True)
+            rows.append((i, name, pts))
+        img_bio = LeaderboardRenderer.draw_session_leaderboard(rows[:10])
+        try:
+            bot.send_photo(cid, img_bio, caption="📊 Session Leaderboard")
+            bot.answer_callback_query(c.id, "Leaderboard shown.", show_alert=False)
+        except Exception:
+            # fallback to alert text
+            txt = "📊 Session Leaderboard\n\n"
+            for idx, name, pts in rows[:10]:
+                txt += f"{idx}. {html.escape(name)} - {pts} pts\n"
+            bot.answer_callback_query(c.id, txt, show_alert=True)
         return
 
 # ==========================================
-# 🎮 GAME COMMANDS
+# 🎮 GAME COMMANDS & core logic
 # ==========================================
 @bot.message_handler(commands=['new', 'new_hard'])
 def start_game(m):
@@ -560,44 +677,33 @@ def start_game(m):
     session = GameSession(cid, is_hard)
     games[cid] = session
     db.update_stats(m.from_user.id, games_played_delta=1)
-
-    # Generate Grid Image
     img_bio = GridRenderer.draw(session.grid, is_hard)
-    # Ensure pointer at start
     try:
         img_bio.seek(0)
     except:
         pass
-
     caption = (f"🔥 <b>WORD VORTEX STARTED!</b>\n"
                f"Mode: {'Hard (10x10)' if is_hard else 'Normal (8x8)'}\n"
                f"⏱ Time Limit: 10 Minutes\n\n"
                f"<b>👇 WORDS TO FIND:</b>\n"
                f"{session.get_hint_text()}")
-
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🔍 Found It!", callback_data='game_guess'))
     markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data='game_hint'),
                InlineKeyboardButton("📊 Score", callback_data='game_score'))
-
-    # Try sending BytesIO directly; if it fails, write a temp file and send that
     try:
         bot.send_photo(cid, img_bio, caption=caption, reply_markup=markup)
-    except Exception as e:
-        logger.exception("send_photo with BytesIO failed, trying temp file fallback")
+    except Exception:
+        logger.exception("send_photo failed, fallback to temp file")
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
                 tf.write(img_bio.getvalue())
                 temp_path = tf.name
             with open(temp_path, 'rb') as f:
                 bot.send_photo(cid, f, caption=caption, reply_markup=markup)
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-        except Exception as e2:
-            logger.exception("fallback send_photo failed")
-            # Last resort: send text
+            try: os.unlink(temp_path)
+            except: pass
+        except Exception:
             bot.send_message(cid, caption, reply_markup=markup)
 
 @bot.message_handler(commands=['hint'])
@@ -635,8 +741,256 @@ def report_issue(m):
     else:
         bot.reply_to(m, "⚠️ Owner not configured.")
 
-# (other commands remain — omitted in this paste for brevity but are unchanged)
+@bot.message_handler(commands=['ping'])
+def ping(m):
+    t0 = time.time()
+    try:
+        bot.send_chat_action(m.chat.id, 'typing')
+    except:
+        pass
+    t1 = time.time()
+    ms = int((t1 - t0) * 1000)
+    bot.reply_to(m, f"Pong! 🏓 {ms} ms")
 
+@bot.message_handler(commands=['scorecard'])
+def scorecard(m):
+    uid = m.from_user.id
+    u = db.get_user(uid, m.from_user.first_name)
+    session_points = 0
+    gid = m.chat.id
+    if gid in games:
+        session_points = games[gid].players_scores.get(uid, 0)
+    txt = (f"📋 <b>Your Scorecard</b>\n"
+           f"Name: {html.escape(u[1])}\n"
+           f"Total Score: {u[5]}\n"
+           f"Wins: {u[4]}\n"
+           f"Session Points (this chat): {session_points}\n"
+           f"Hint Balance: {u[6]}")
+    bot.reply_to(m, txt)
+
+@bot.message_handler(commands=['balance'])
+def balance(m):
+    u = db.get_user(m.from_user.id, m.from_user.first_name)
+    bot.reply_to(m, f"💰 Your balance: {u[6]} pts")
+
+@bot.message_handler(commands=['leaderboard'])
+def leaderboard(m):
+    top = db.get_top_players()
+    txt = "🏆 <b>TOP 10 PLAYERS</b> 🏆\n\n"
+    for i, (name, score) in enumerate(top, 1):
+        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
+        txt += f"{medal} <b>{html.escape(name)}</b> - {score} pts\n"
+    bot.reply_to(m, txt)
+
+@bot.message_handler(commands=['endgame'])
+def force_end(m):
+    cid = m.chat.id
+    if cid in games:
+        if not is_admin_or_owner(m.from_user.id):
+            bot.reply_to(m, "Only an admin or owner can force-stop the game.")
+            return
+        end_game_session(cid, "stopped")
+    else:
+        bot.reply_to(m, "No active game to stop.")
+
+# ==========================================
+# Admin / owner commands: addpoints, addadmin, deladmin, admins, settings, restart
+# ==========================================
+@bot.message_handler(commands=['addpoints'])
+def addpoints_cmd(m):
+    if m.from_user.id != OWNER_ID:
+        bot.reply_to(m, "❌ Only owner can use this.")
+        return
+    parts = m.text.split()
+    if len(parts) < 3:
+        bot.reply_to(m, "Usage: /addpoints <username_or_id> <amount> [balance|score]")
+        return
+    target = parts[1].strip()
+    try:
+        amount = int(parts[2])
+    except:
+        bot.reply_to(m, "Amount must be a number.")
+        return
+    mode = parts[3].strip().lower() if len(parts) >= 4 else 'score'
+    target_id = None
+    chat = None
+    if target.lstrip('-').isdigit():
+        target_id = int(target)
+    else:
+        if not target.startswith('@'):
+            target = '@' + target
+        try:
+            chat = bot.get_chat(target)
+            target_id = chat.id
+        except Exception as e:
+            bot.reply_to(m, f"❌ Could not find user {target}. They must have a public username or have started the bot.")
+            return
+    # Ensure user exists
+    db.get_user(target_id, getattr(chat, 'username', 'Player') if chat else 'Player')
+    try:
+        if mode == 'balance':
+            db.update_stats(target_id, score_delta=0, hint_delta=amount)
+        else:
+            db.update_stats(target_id, score_delta=amount, hint_delta=0)
+        bot.reply_to(m, f"✅ Added {amount} ({mode}) to {target} (ID: {target_id}).")
+        try:
+            bot.send_message(target_id, f"💸 You received {amount} pts ({mode}) from the owner.")
+        except:
+            pass
+    except Exception as e:
+        bot.reply_to(m, f"❌ Failed to add points: {e}")
+
+@bot.message_handler(commands=['addadmin'])
+@owner_only
+def addadmin_cmd(m):
+    parts = m.text.split()
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /addadmin <username_or_id>")
+        return
+    target = parts[1].strip()
+    admin_id = None
+    chat = None
+    if target.lstrip('-').isdigit():
+        admin_id = int(target)
+    else:
+        if not target.startswith('@'):
+            target = '@' + target
+        try:
+            chat = bot.get_chat(target)
+            admin_id = chat.id
+        except Exception:
+            bot.reply_to(m, f"❌ Could not find user {target}. They must have a public username or have started the bot.")
+            return
+    db.add_admin(admin_id)
+    bot.reply_to(m, f"✅ Added admin: {admin_id}")
+    try:
+        bot.send_message(admin_id, "✅ You have been made an admin for Word Vortex Bot.")
+    except:
+        pass
+
+@bot.message_handler(commands=['deladmin'])
+@owner_only
+def deladmin_cmd(m):
+    parts = m.text.split()
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /deladmin <username_or_id>")
+        return
+    target = parts[1].strip()
+    admin_id = None
+    if target.lstrip('-').isdigit():
+        admin_id = int(target)
+    else:
+        if not target.startswith('@'):
+            target = '@' + target
+        try:
+            chat = bot.get_chat(target)
+            admin_id = chat.id
+        except Exception:
+            bot.reply_to(m, f"❌ Could not find user {target}.")
+            return
+    db.remove_admin(admin_id)
+    bot.reply_to(m, f"✅ Removed admin: {admin_id}")
+
+@bot.message_handler(commands=['admins'])
+def admins_cmd(m):
+    admins = db.list_admins()
+    txt = "🔧 Current Admins:\n"
+    for a in admins:
+        txt += f"- {a}\n"
+    if OWNER_ID:
+        txt += f"\nOwner: {OWNER_ID}"
+    bot.reply_to(m, txt)
+
+@bot.message_handler(commands=['set_hint_cost'])
+@owner_only
+def set_hint_cost(m):
+    parts = m.text.split()
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /set_hint_cost <amount>")
+        return
+    global HINT_COST
+    try:
+        HINT_COST = int(parts[1])
+        bot.reply_to(m, f"✅ HINT_COST set to {HINT_COST}")
+    except:
+        bot.reply_to(m, "Amount must be an integer.")
+
+@bot.message_handler(commands=['toggle_force_join'])
+@owner_only
+def toggle_force_join(m):
+    global FORCE_JOIN
+    FORCE_JOIN = not FORCE_JOIN
+    bot.reply_to(m, f"✅ FORCE_JOIN is now {FORCE_JOIN}")
+
+@bot.message_handler(commands=['set_start_image'])
+@owner_only
+def set_start_image(m):
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /set_start_image <image_url>")
+        return
+    global START_IMG_URL
+    START_IMG_URL = parts[1].strip()
+    bot.reply_to(m, "✅ START image updated.")
+
+@bot.message_handler(commands=['show_settings'])
+@owner_only
+def show_settings(m):
+    txt = (f"🔧 Settings:\n\n"
+           f"FORCE_JOIN: {FORCE_JOIN}\n"
+           f"HINT_COST: {HINT_COST}\n"
+           f"START_IMG_URL: {START_IMG_URL}\n"
+           f"CHANNEL_USERNAME: {CHANNEL_USERNAME}\n"
+           f"SUPPORT_GROUP_LINK: {SUPPORT_GROUP_LINK}\n")
+    bot.reply_to(m, txt)
+
+@bot.message_handler(commands=['restart'])
+@owner_only
+def restart_cmd(m):
+    bot.reply_to(m, "🔁 Restarting bot now...")
+    # flush logs and restart via execv
+    try:
+        python = sys.executable
+        os.execv(python, [python] + sys.argv)
+    except Exception:
+        # Last resort: exit process (host may restart)
+        logger.exception("Restart via exec failed, exiting.")
+        os._exit(0)
+
+# ==========================================
+# /define command implemented using dictionaryapi.dev
+# ==========================================
+@bot.message_handler(commands=['define'])
+def define_cmd(m):
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /define <word>")
+        return
+    word = parts[1].strip()
+    try:
+        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+        resp = requests.get(url, timeout=8)
+        data = resp.json()
+        if isinstance(data, list) and data:
+            meanings = data[0].get('meanings', [])
+            if meanings:
+                defs = meanings[0].get('definitions', [])
+                if defs:
+                    definition = defs[0].get('definition', 'No definition found.')
+                    example = defs[0].get('example', '')
+                    txt = f"📚 <b>{word}</b>\n{definition}"
+                    if example:
+                        txt += f"\n\n<i>Example:</i> {example}"
+                    bot.reply_to(m, txt)
+                    return
+        bot.reply_to(m, f"❌ No definition found for '{word}'.")
+    except Exception as e:
+        logger.exception("define error")
+        bot.reply_to(m, "❌ Error fetching definition.")
+
+# ==========================================
+# CORE GUESS PROCESSING & END GAME
+# ==========================================
 def process_word_guess(m):
     cid = m.chat.id
     if cid not in games:
@@ -655,7 +1009,8 @@ def process_word_guess(m):
     if now - last < COOLDOWN:
         try:
             bot.reply_to(m, f"⏳ Slow down! Wait {COOLDOWN} seconds between guesses.")
-        except: pass
+        except:
+            pass
         return
     game.players_last_guess[uid] = now
     try:
@@ -668,9 +1023,13 @@ def process_word_guess(m):
         else:
             game.found.add(word)
             game.last_activity = time.time()
-            points = 2
-            if len(game.found) == 1: points = 3
-            if len(game.found) == len(game.words): points = 5
+            # scoring
+            if len(game.found) == 1:
+                points = FIRST_BLOOD_POINTS
+            elif len(game.found) == len(game.words):
+                points = FINISHER_POINTS
+            else:
+                points = NORMAL_POINTS
             prev = game.players_scores.get(uid, 0)
             game.players_scores[uid] = prev + points
             db.update_stats(uid, score_delta=points)
