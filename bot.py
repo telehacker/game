@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 WORDS GRID ROBOT - ULTIMATE PREMIUM EDITION
-Version: 5.0 (Enterprise) - Admins, Settings, Restart, Scoreboard Image, /define
+Version: 5.2 (Enterprise) - Added broadcast, add-to-group button, auto-redeem, cash balance,
+changed addpoints default to hint balance, and other fixes.
 Developer: Ruhvaan (updated)
 """
 
@@ -55,6 +56,10 @@ GAME_DURATION = 600  # seconds (10 minutes)
 COOLDOWN = 2
 HINT_COST = 50
 
+# Redeem (cash) configuration
+REDEEM_THRESHOLD = 150  # points required to redeem
+REDEEM_AMOUNT_RS = 10   # rupees per threshold redeemed
+
 PLANS = [
     {"points": 50, "price_rs": 10},
     {"points": 120, "price_rs": 20},
@@ -62,8 +67,16 @@ PLANS = [
     {"points": 800, "price_rs": 100},
 ]
 
+# Sample curated pools
+PHYSICS_WORDS = ["FORCE", "ENERGY", "MOMENTUM", "VELOCITY", "ACCEL", "VECTOR", "SCALAR", "WAVE", "PHOTON", "GRAVITY"]
+CHEMISTRY_WORDS = ["ATOM", "MOLECULE", "REACTION", "BOND", "ION", "CATION", "ANION", "ACID", "BASE", "SALT"]
+JEE_WORDS = [
+    "INTEGRAL", "DIFFERENTIAL", "MATRIX", "VECTOR", "FORCE", "ENERGY", "EQUILIBRIUM", "KINEMATICS",
+    "OXIDATION", "REDUCTION"
+]
+
 # ==========================================
-# 🗄️ DATABASE MANAGER (includes admins)
+# 🗄️ DATABASE MANAGER (includes admins + migrations)
 # ==========================================
 class DatabaseManager:
     def __init__(self, db_name='wordsgrid_premium.db'):
@@ -76,7 +89,7 @@ class DatabaseManager:
     def init_db(self):
         conn = self.connect()
         c = conn.cursor()
-        # users table
+        # Create users table with cash_balance column. If table existed from older version, we ALTER it.
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             name TEXT,
@@ -85,7 +98,8 @@ class DatabaseManager:
             wins INTEGER DEFAULT 0,
             total_score INTEGER DEFAULT 0,
             hint_balance INTEGER DEFAULT 100,
-            is_banned INTEGER DEFAULT 0
+            is_banned INTEGER DEFAULT 0,
+            cash_balance INTEGER DEFAULT 0
         )''')
         # admins table
         c.execute('''CREATE TABLE IF NOT EXISTS admins (
@@ -99,6 +113,17 @@ class DatabaseManager:
             timestamp TEXT
         )''')
         conn.commit()
+
+        # Migration: ensure cash_balance column exists (for very old DBs)
+        try:
+            c.execute("PRAGMA table_info(users)")
+            cols = [r[1] for r in c.fetchall()]
+            if 'cash_balance' not in cols:
+                logger.info("Migrating DB: adding cash_balance column")
+                c.execute("ALTER TABLE users ADD COLUMN cash_balance INTEGER DEFAULT 0")
+                conn.commit()
+        except Exception:
+            logger.exception("DB migration check failed")
         conn.close()
 
     # User helpers
@@ -119,7 +144,6 @@ class DatabaseManager:
     def register_user(self, user_id, name):
         """
         Ensure user exists. Return (user_row, created_bool).
-        This helper is used so callers can detect newly-registered users.
         """
         conn = self.connect()
         c = conn.cursor()
@@ -137,17 +161,55 @@ class DatabaseManager:
         return user, True
 
     def update_stats(self, user_id, score_delta=0, hint_delta=0, win=False, games_played_delta=0):
+        """
+        Update stats. score_delta adds to total_score, hint_delta to hint_balance.
+        After updating score, automatically process redeeming cash if threshold reached.
+        """
         conn = self.connect()
         c = conn.cursor()
-        if score_delta != 0 or hint_delta != 0:
-            c.execute("UPDATE users SET total_score = total_score + ?, hint_balance = hint_balance + ? WHERE user_id=?", 
-                      (score_delta, hint_delta, user_id))
+        # Update total_score
+        if score_delta != 0:
+            c.execute("UPDATE users SET total_score = total_score + ? WHERE user_id=?", (score_delta, user_id))
+        # Update hint_balance
+        if hint_delta != 0:
+            c.execute("UPDATE users SET hint_balance = hint_balance + ? WHERE user_id=?", (hint_delta, user_id))
+        # Wins
         if win:
             c.execute("UPDATE users SET wins = wins + 1 WHERE user_id=?", (user_id,))
+        # Games played
         if games_played_delta != 0:
             c.execute("UPDATE users SET games_played = games_played + ? WHERE user_id=?", (games_played_delta, user_id))
         conn.commit()
-        conn.close()
+
+        # Auto-redeem: check total_score and convert every REDEEM_THRESHOLD points to REDEEM_AMOUNT_RS rupees
+        try:
+            c.execute("SELECT total_score, cash_balance, name FROM users WHERE user_id=?", (user_id,))
+            row = c.fetchone()
+            if row:
+                total_score_now, cash_bal_now, name = row[0], row[1], row[2] if len(row) > 2 else ""
+                if REDEEM_THRESHOLD > 0:
+                    redeem_count = total_score_now // REDEEM_THRESHOLD
+                    if redeem_count > 0:
+                        # deduct points and increase cash_balance
+                        deduct = redeem_count * REDEEM_THRESHOLD
+                        add_cash = redeem_count * REDEEM_AMOUNT_RS
+                        c.execute("UPDATE users SET total_score = total_score - ?, cash_balance = cash_balance + ? WHERE user_id=?",
+                                  (deduct, add_cash, user_id))
+                        conn.commit()
+                        # notify user and owner
+                        try:
+                            bot.send_message(user_id, f"🎉 Congrats! You redeemed {add_cash} ₹ (for {deduct} pts). Your cash balance: {cash_bal_now + add_cash} ₹")
+                        except Exception:
+                            logger.debug("Could not notify user about auto-redeem")
+                        if OWNER_ID:
+                            try:
+                                bot.send_message(OWNER_ID, f"💸 Auto-redeem: {name} ({user_id}) redeemed ₹{add_cash} (used {deduct} pts).")
+                            except Exception:
+                                logger.debug("Could not notify owner about auto-redeem")
+        except Exception:
+            logger.exception("Auto-redeem failed")
+        finally:
+            conn.close()
 
     # Admin helpers
     def add_admin(self, admin_id):
@@ -198,6 +260,13 @@ class DatabaseManager:
         conn.close()
         return data
 
+    def reset_leaderboard(self):
+        conn = self.connect()
+        c = conn.cursor()
+        c.execute("UPDATE users SET total_score = 0, wins = 0")
+        conn.commit()
+        conn.close()
+
     def get_all_users(self):
         conn = self.connect()
         c = conn.cursor()
@@ -209,13 +278,14 @@ class DatabaseManager:
 db = DatabaseManager()
 
 # ==========================================
-# 🎨 Image Utilities
-# - GridRenderer (same as before)
-# - LeaderboardRenderer: draw nice scoreboard image for sessions
+# (GridRenderer, LeaderboardRenderer, GameSession) ...
+# For brevity: reuse the same implementations from previous version (visual lines, placements, timers)
+# I'll include the updated GridRenderer and GameSession which support placements and found-lines.
 # ==========================================
+
 class GridRenderer:
     @staticmethod
-    def draw(grid, is_hard=False):
+    def draw(grid, placements=None, found=None, is_hard=False):
         cell_size = 60
         header_height = 100
         footer_height = 50
@@ -240,15 +310,17 @@ class GridRenderer:
             letter_font = ImageFont.load_default()
             header_font = ImageFont.load_default()
             footer_font = ImageFont.load_default()
+
         draw.rectangle([0, 0, width, header_height], fill=HEADER_BG)
         title_text = "WORD VORTEX"
-        bbox = draw.textbbox((0,0), title_text, font=header_font)
+        bbox = draw.textbbox((0, 0), title_text, font=header_font)
         tw = bbox[2] - bbox[0]
-        draw.text(((width - tw)/2, 30), title_text, fill="#2980b9", font=header_font)
+        draw.text(((width - tw) / 2, 30), title_text, fill="#2980b9", font=header_font)
         mode_text = "HARD MODE" if is_hard else "NORMAL MODE"
-        bbox2 = draw.textbbox((0,0), mode_text, font=footer_font)
+        bbox2 = draw.textbbox((0, 0), mode_text, font=footer_font)
         tw2 = bbox2[2] - bbox2[0]
-        draw.text(((width - tw2)/2, 75), mode_text, fill="#7f8c8d", font=footer_font)
+        draw.text(((width - tw2) / 2, 75), mode_text, fill="#7f8c8d", font=footer_font)
+
         grid_start_y = header_height + padding
         for r in range(rows):
             for c in range(cols):
@@ -257,12 +329,30 @@ class GridRenderer:
                 shape = [x, y, x + cell_size, y + cell_size]
                 draw.rectangle(shape, outline=GRID_COLOR, width=2)
                 char = grid[r][c]
-                bbox_char = draw.textbbox((0,0), char, font=letter_font)
+                bbox_char = draw.textbbox((0, 0), char, font=letter_font)
                 cw = bbox_char[2] - bbox_char[0]
                 ch = bbox_char[3] - bbox_char[1]
-                draw.text((x + (cell_size - cw)/2, y + (cell_size - ch)/2 - 5), char, fill=TEXT_COLOR, font=letter_font)
+                draw.text((x + (cell_size - cw) / 2, y + (cell_size - ch) / 2 - 5), char, fill=TEXT_COLOR, font=letter_font)
+
+        if placements and found:
+            try:
+                for word, coords in placements.items():
+                    if word in found and coords:
+                        first = coords[0]; last = coords[-1]
+                        x1 = padding + (first[1] * cell_size) + cell_size / 2
+                        y1 = grid_start_y + (first[0] * cell_size) + cell_size / 2
+                        x2 = padding + (last[1] * cell_size) + cell_size / 2
+                        y2 = grid_start_y + (last[0] * cell_size) + cell_size / 2
+                        draw.line([(x1, y1), (x2, y2)], fill="#ffffff", width=8)
+                        draw.line([(x1, y1), (x2, y2)], fill="#ff4757", width=5)
+                        r_end = 6
+                        draw.ellipse([x1 - r_end, y1 - r_end, x1 + r_end, y1 + r_end], fill="#ff4757")
+                        draw.ellipse([x2 - r_end, y2 - r_end, x2 + r_end, y2 + r_end], fill="#ff4757")
+            except Exception:
+                logger.exception("Error drawing found-word lines")
+
         draw.text((30, height - 30), "Made by @Ruhvaan", fill="#95a5a6", font=footer_font)
-        draw.text((width - 100, height - 30), "v5.0", fill="#95a5a6", font=footer_font)
+        draw.text((width - 100, height - 30), "v5.2", fill="#95a5a6", font=footer_font)
         bio = io.BytesIO()
         img.save(bio, 'JPEG', quality=95)
         bio.seek(0)
@@ -275,10 +365,9 @@ class GridRenderer:
 class LeaderboardRenderer:
     @staticmethod
     def draw_session_leaderboard(rows):
-        # rows: list of tuples (rank_index, name, score)
         width = 700
         height = max(120, 60 + 50 * len(rows))
-        bg = Image.new('RGB', (width, height), '#0f1724')  # dark
+        bg = Image.new('RGB', (width, height), '#0f1724')
         draw = ImageDraw.Draw(bg)
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -288,11 +377,10 @@ class LeaderboardRenderer:
         except:
             title_font = ImageFont.load_default()
             row_font = ImageFont.load_default()
-        # Title
         draw.text((20, 10), "Session Leaderboard", fill="#FFD700", font=title_font)
         y = 50
         for idx, name, pts in rows:
-            medal = "🥇" if idx==1 else "🥈" if idx==2 else "🥉" if idx==3 else f"{idx}."
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
             draw.text((20, y), f"{medal}", fill="#FFFFFF", font=row_font)
             draw.text((80, y), f"{name}", fill="#FFFFFF", font=row_font)
             draw.text((width - 120, y), f"{pts} pts", fill="#7be495", font=row_font)
@@ -306,11 +394,7 @@ class LeaderboardRenderer:
             pass
         return bio
 
-# ==========================================
-# 🧠 WORDS + GAME SESSION
-# ==========================================
 ALL_WORDS = []
-
 def fetch_words():
     global ALL_WORDS
     try:
@@ -320,8 +404,8 @@ def fetch_words():
         raw_words = [w.upper() for w in content.splitlines()]
         ALL_WORDS = [w for w in raw_words if 4 <= len(w) <= 9 and w.isalpha() and w not in BAD_WORDS]
         logger.info(f"Loaded {len(ALL_WORDS)} words.")
-    except Exception as e:
-        logger.error(f"Word Fetch Error: {e}")
+    except Exception:
+        logger.exception("Word Fetch Error")
         ALL_WORDS = ['PYTHON', 'JAVA', 'SCRIPT', 'ROBOT', 'FUTURE', 'SPACE', 'GALAXY', 'NEBULA']
 
 fetch_words()
@@ -329,7 +413,7 @@ fetch_words()
 games = {}  # chat_id -> GameSession
 
 class GameSession:
-    def __init__(self, chat_id, is_hard=False, duration=GAME_DURATION):
+    def __init__(self, chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None):
         self.chat_id = chat_id
         self.is_hard = is_hard
         self.size = 10 if is_hard else 8
@@ -339,32 +423,64 @@ class GameSession:
         self.words = []
         self.found = set()
         self.grid = []
-        self.players_scores = {}  # uid -> points
+        self.players_scores = {}
         self.players_last_guess = {}
         self.duration = duration
         self.message_id = None
         self.active = True
         self.timer_thread = None
+        self.placements = {}
+        self.word_pool = word_pool
         self.generate()
 
     def generate(self):
-        if not ALL_WORDS: fetch_words()
-        pool = ALL_WORDS[:] if len(ALL_WORDS) >= self.word_count else (ALL_WORDS * 2)
-        self.words = random.sample(pool, self.word_count)
+        if self.word_pool:
+            pool = [w.upper() for w in self.word_pool if 4 <= len(w) <= 12]
+        else:
+            if not ALL_WORDS:
+                fetch_words()
+            pool = ALL_WORDS[:] if len(ALL_WORDS) >= self.word_count else (ALL_WORDS * 2)
+        try:
+            self.words = random.sample(pool, min(self.word_count, len(pool)))
+        except Exception:
+            self.words = [random.choice(pool) for _ in range(self.word_count)]
         self.grid = [[' ' for _ in range(self.size)] for _ in range(self.size)]
         dirs = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
         sorted_words = sorted(self.words, key=len, reverse=True)
+        self.placements = {}
         for word in sorted_words:
             placed = False
             attempts = 0
-            while not placed and attempts < 200:
+            while not placed and attempts < 400:
                 attempts += 1
                 row = random.randint(0, self.size - 1)
                 col = random.randint(0, self.size - 1)
                 dr, dc = random.choice(dirs)
                 if self._can_place(row, col, dr, dc, word):
-                    self._place(row, col, dr, dc, word)
+                    coords = []
+                    for i in range(len(word)):
+                        nr, nc = row + i*dr, col + i*dc
+                        self.grid[nr][nc] = word[i]
+                        coords.append((nr, nc))
+                    self.placements[word] = coords
                     placed = True
+            if not placed:
+                for r in range(self.size):
+                    for c in range(self.size):
+                        for dr, dc in dirs:
+                            if self._can_place(r, c, dr, dc, word):
+                                coords = []
+                                for i in range(len(word)):
+                                    nr, nc = r + i*dr, c + i*dc
+                                    self.grid[nr][nc] = word[i]
+                                    coords.append((nr, nc))
+                                self.placements[word] = coords
+                                placed = True
+                                break
+                        if placed:
+                            break
+                    if placed:
+                        break
         for r in range(self.size):
             for c in range(self.size):
                 if self.grid[r][c] == ' ':
@@ -373,13 +489,11 @@ class GameSession:
     def _can_place(self, r, c, dr, dc, word):
         for i in range(len(word)):
             nr, nc = r + i*dr, c + i*dc
-            if not (0 <= nr < self.size and 0 <= nc < self.size): return False
-            if self.grid[nr][nc] != ' ' and self.grid[nr][nc] != word[i]: return False
+            if not (0 <= nr < self.size and 0 <= nc < self.size):
+                return False
+            if self.grid[nr][nc] != ' ' and self.grid[nr][nc] != word[i]:
+                return False
         return True
-
-    def _place(self, r, c, dr, dc, word):
-        for i in range(len(word)):
-            self.grid[r + i*dr][c + i*dc] = word[i]
 
     def get_hint_text(self):
         hints = []
@@ -392,7 +506,6 @@ class GameSession:
         return "\n".join(hints)
 
     def start_timer(self):
-        # spawn background timer thread for this session
         if self.timer_thread and self.timer_thread.is_alive():
             return
         self.timer_thread = threading.Thread(target=self._run_timer, daemon=True)
@@ -404,18 +517,15 @@ class GameSession:
                 elapsed = time.time() - self.start_time
                 remaining = int(self.duration - elapsed)
                 if remaining <= 0:
-                    # time up
                     try:
                         bot.send_message(self.chat_id, "⏰ Time's up! The game has ended.")
                     except Exception:
                         logger.exception("Failed to notify chat on timeout")
-                    # end game as timeout
                     try:
                         end_game_session(self.chat_id, "timeout")
                     except Exception:
                         logger.exception("end_game_session on timeout failed")
                     break
-                # update caption (every 10 seconds) if we have a message id
                 if self.message_id:
                     mins = remaining // 60
                     secs = remaining % 60
@@ -425,7 +535,6 @@ class GameSession:
                                f"⏱ Time Left: {time_str}\n\n"
                                f"<b>👇 WORDS TO FIND:</b>\n"
                                f"{self.get_hint_text()}")
-                    # create markup same as when started
                     markup = InlineKeyboardMarkup()
                     markup.add(InlineKeyboardButton("🔍 Found It!", callback_data='game_guess'))
                     markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data='game_hint'),
@@ -434,7 +543,6 @@ class GameSession:
                         safe_edit_message(caption, self.chat_id, self.message_id, reply_markup=markup)
                     except Exception:
                         logger.exception("Timer safe_edit_message failed")
-                # Sleep a short while, but wake frequently enough to show decent countdown
                 time.sleep(10)
         except Exception:
             logger.exception("GameSession._run_timer error")
@@ -442,7 +550,7 @@ class GameSession:
             self.active = False
 
 # ==========================================
-# 🛡️ HELPERS & PERMISSIONS
+# Helpers, Menu, Callbacks (includes Add-to-Group button)
 # ==========================================
 def is_subscribed(user_id):
     if not FORCE_JOIN:
@@ -454,8 +562,7 @@ def is_subscribed(user_id):
     try:
         status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
         return status in ['creator', 'administrator', 'member']
-    except Exception as e:
-        logger.debug(f"Subscription check failed: {e}")
+    except Exception:
         return True
 
 def require_subscription(func):
@@ -480,23 +587,9 @@ def owner_only(func):
         return func(m)
     return wrapper
 
-def admin_only(func):
-    def wrapper(m):
-        if not is_admin_or_owner(m.from_user.id):
-            bot.reply_to(m, "❌ Only owner or admin can use this.")
-            return
-        return func(m)
-    return wrapper
-
 def safe_edit_message(caption, cid, mid, reply_markup=None):
-    # robust edit fallback
     try:
         bot.edit_message_caption(caption, chat_id=cid, message_id=mid, reply_markup=reply_markup)
-        return True
-    except Exception:
-        pass
-    try:
-        bot.edit_message_caption(caption, cid, mid, reply_markup=reply_markup)
         return True
     except Exception:
         pass
@@ -516,22 +609,17 @@ def safe_edit_message(caption, cid, mid, reply_markup=None):
         logger.exception("safe_edit_message: all edit/send attempts failed")
         return False
 
-# ==========================================
-# 🎮 HANDLERS & MENU
-# ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def show_main_menu(m):
-    # Register user (and detect if newly registered)
     try:
         name = m.from_user.first_name or m.from_user.username or "Player"
         user_row, created = db.register_user(m.from_user.id, name)
-        # Notify owner on every /start (user requested owner notification)
         if OWNER_ID:
             try:
                 bot.send_message(OWNER_ID, f"🔔 /start used:\nName: {html.escape(name)}\nID: {m.from_user.id}\nChat: {m.chat.id}")
             except Exception:
                 logger.exception("Failed to notify owner about /start")
-    except Exception as e:
+    except Exception:
         logger.exception("DB register_user error in show_main_menu")
 
     txt = (f"👋 <b>Hello, {html.escape(m.from_user.first_name or m.from_user.username or 'Player')}!</b>\n\n"
@@ -539,19 +627,28 @@ def show_main_menu(m):
            "The most advanced multiplayer word search bot on Telegram.\n\n"
            "👇 <b>What would you like to do?</b>")
 
-    # Build keyboard. Put Join & Check Join at the top as requested.
+    # Build keyboard. Put Join & Check Join at the top and Add to Group button.
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"),
                InlineKeyboardButton("🔄 Check Join", callback_data='check_join'))
-    markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'),
-               InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'))
-    markup.add(InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'),
-               InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'))
-    markup.add(InlineKeyboardButton("🐞 Report Issue", callback_data='open_issue'),
-               InlineKeyboardButton("💳 Buy Points", callback_data='open_plans'))
-    markup.add(InlineKeyboardButton("👨‍💻 Support / Owner", url=SUPPORT_GROUP_LINK))
+    # Add "Add to group" button (dynamic bot username)
+    try:
+        bot_username = bot.get_me().username
+        if bot_username:
+            markup.add(InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_username}?startgroup=true"),
+                       InlineKeyboardButton("🎮 Play Game", callback_data='help_play'))
+        else:
+            markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'))
+    except Exception:
+        markup.add(InlineKeyboardButton("🎮 Play Game", callback_data='help_play'))
 
-    # Try send photo; if it fails, always send text reply so user sees menu
+    markup.add(InlineKeyboardButton("🤖 Commands", callback_data='help_cmd'),
+               InlineKeyboardButton("🏆 Leaderboard", callback_data='menu_lb'))
+    markup.add(InlineKeyboardButton("👤 My Stats", callback_data='menu_stats'),
+               InlineKeyboardButton("🐞 Report Issue", callback_data='open_issue'))
+    markup.add(InlineKeyboardButton("💳 Buy Points", callback_data='open_plans'),
+               InlineKeyboardButton("👨‍💻 Support / Owner", url=SUPPORT_GROUP_LINK))
+
     try:
         bot.send_photo(m.chat.id, START_IMG_URL, caption=txt, reply_markup=markup)
     except Exception:
@@ -559,117 +656,77 @@ def show_main_menu(m):
         try:
             bot.reply_to(m, txt, reply_markup=markup)
         except Exception:
-            # Last resort: plain text
             try:
                 bot.send_message(m.chat.id, txt)
             except Exception:
                 logger.exception("Failed to send any start message")
 
+# callback handler (keeps robust fallback)
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callbacks(c):
-    """
-    Robust callback handler with fallbacks:
-    - Acknowledge callback early to clear client loading.
-    - For menu actions that sometimes fail (due to parse_mode or chat permissions),
-      try multiple fallbacks including sending as a private message to the user.
-    """
     cid = c.message.chat.id
     mid = c.message.message_id
     uid = c.from_user.id
     data = c.data
-
-    # QUICK: always answer callback (non-alert) immediately to clear client loading state
     try:
         bot.answer_callback_query(c.id, "", show_alert=False)
-    except Exception:
+    except:
         pass
 
-    # small helper to send menu text with fallbacks
     def send_text_with_fallback(chat_id, text, reply_markup=None, parse_mode='HTML'):
-        # Try: send to same chat with parse_mode
         try:
             bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
             return True
-        except Exception as e:
-            logger.debug(f"send_text_with_fallback: send_message with parse_mode failed: {e}")
-        # Try: without parse_mode
+        except Exception:
+            pass
         try:
             bot.send_message(chat_id, text, reply_markup=reply_markup)
             return True
-        except Exception as e:
-            logger.debug(f"send_text_with_fallback: send_message without parse_mode failed: {e}")
-        # Try: send as private message to user (if different chat)
+        except Exception:
+            pass
         try:
             bot.send_message(uid, text, parse_mode=parse_mode)
-            # Notify in group that the menu was sent privately (so user knows)
             try:
                 bot.send_message(chat_id, "🔔 I have sent you the information in a private message. Please check your PMs.")
             except:
                 pass
             return True
-        except Exception as e:
-            logger.exception(f"send_text_with_fallback: private send failed: {e}")
+        except Exception:
             return False
 
-    # CHECK JOIN
     if data == "check_join":
-        try:
-            if is_subscribed(uid):
-                try: bot.delete_message(cid, mid)
-                except: pass
-                show_main_menu(c.message)
-                try:
-                    bot.answer_callback_query(c.id, "✅ Verified! Welcome.")
-                except:
-                    pass
-            else:
-                try:
-                    bot.answer_callback_query(c.id, "❌ You haven't joined yet!", show_alert=True)
-                except:
-                    pass
-        except Exception as e:
-            logger.exception("check_join handler error")
-            try:
-                bot.answer_callback_query(c.id, "❌ Verification failed.", show_alert=True)
-            except:
-                pass
+        if is_subscribed(uid):
+            try: bot.delete_message(cid, mid)
+            except: pass
+            show_main_menu(c.message)
+            try: bot.answer_callback_query(c.id, "✅ Verified! Welcome.")
+            except: pass
+        else:
+            try: bot.answer_callback_query(c.id, "❌ You haven't joined yet!", show_alert=True)
+            except: pass
         return
 
-    # OPEN ISSUE -> ForceReply prompt (fallback to private message if group send fails)
     if data == 'open_issue':
         prompt = f"@{c.from_user.username or c.from_user.first_name} Please type your issue or use /issue <message>:"
-        # First try to send in the same chat
         try:
             bot.send_message(cid, prompt, reply_markup=ForceReply(selective=True))
-            try:
-                bot.answer_callback_query(c.id, "✍️ Type your issue below.")
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "✍️ Type your issue below.")
+            except: pass
             return
-        except Exception as e:
-            logger.debug(f"open_issue: group send failed: {e}")
-        # Fallback: send private
+        except Exception:
+            pass
         try:
             bot.send_message(uid, prompt, reply_markup=ForceReply(selective=True))
-            try:
-                bot.answer_callback_query(c.id, "✍️ Sent a private prompt. Check your PMs.")
-            except:
-                pass
-            # Inform in group that we've sent a PM so user knows where to reply
-            try:
-                bot.send_message(cid, f"🔔 {c.from_user.first_name}, I sent you a private prompt to report your issue.")
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "✍️ Sent a private prompt. Check your PMs.")
+            except: pass
+            try: bot.send_message(cid, f"🔔 {c.from_user.first_name}, I sent you a private prompt to report your issue.")
+            except: pass
             return
-        except Exception as e:
-            logger.exception("open_issue: private send also failed")
-            try:
-                bot.answer_callback_query(c.id, "❌ Unable to open issue prompt.", show_alert=True)
-            except:
-                pass
+        except Exception:
+            try: bot.answer_callback_query(c.id, "❌ Unable to open issue prompt.", show_alert=True)
+            except: pass
         return
 
-    # OPEN PLANS -> send new message (not alert)
     if data == 'open_plans':
         txt = "💳 Points Plans:\n\n"
         for p in PLANS:
@@ -677,15 +734,11 @@ def handle_callbacks(c):
         txt += f"\nTo buy, contact the owner: {SUPPORT_GROUP_LINK}"
         ok = send_text_with_fallback(cid, txt)
         try:
-            if ok:
-                bot.answer_callback_query(c.id, "Plans opened.")
-            else:
-                bot.answer_callback_query(c.id, "❌ Could not open plans.", show_alert=True)
-        except:
-            pass
+            if ok: bot.answer_callback_query(c.id, "Plans opened.")
+            else: bot.answer_callback_query(c.id, "❌ Could not open plans.", show_alert=True)
+        except: pass
         return
 
-    # HELP / PLAY -> send new message with Back button
     if data == 'help_play':
         txt = ("<b>📖 How to Play:</b>\n\n"
                "1️⃣ <b>Start:</b> Type <code>/new</code> in a group.\n"
@@ -699,21 +752,20 @@ def handle_callbacks(c):
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
         ok = send_text_with_fallback(cid, txt, reply_markup=markup)
         try:
-            if ok:
-                bot.answer_callback_query(c.id, "Opened play help.")
-            else:
-                bot.answer_callback_query(c.id, "❌ Could not open play help.", show_alert=True)
-        except:
-            pass
+            if ok: bot.answer_callback_query(c.id, "Opened play help.")
+            else: bot.answer_callback_query(c.id, "❌ Could not open play help.", show_alert=True)
+        except: pass
         return
 
-    # HELP / COMMANDS -> send new message (long text), try robust fallbacks
     if data == 'help_cmd':
         txt = ("<b>🤖 Command List:</b>\n\n"
                "/start, /help - Open menu\n"
                "/ping - Check bot ping\n"
-               "/new - Start a game\n"
+               "/new - Start a normal game\n"
                "/new_hard - Start hard game\n"
+               "/new_physics - Start physics vocab game\n"
+               "/new_chemistry - Start chemistry vocab game\n"
+               "/new_jee - Start JEE-level mixed game\n"
                "/hint - Buy hint (-50)\n"
                "/endgame - Stop the game\n"
                "/mystats - View profile\n"
@@ -726,7 +778,7 @@ def handle_callbacks(c):
                "/achievements - Your achievements\n"
                "/status - Bot stats (Owner)\n"
                "/settings - Bot settings (Owner)\n"
-               "/addpoints <username_or_id> <amount> [balance|score] (Owner)\n"
+               "/addpoints <username_or_id> <amount> [balance|score] (Owner)  <-- now defaults to balance\n"
                "/addadmin <username_or_id> (Owner)\n"
                "/deladmin <username_or_id> (Owner)\n"
                "/admins - list admins\n"
@@ -734,20 +786,18 @@ def handle_callbacks(c):
                "/toggle_force_join (Owner)\n"
                "/set_start_image <url> (Owner)\n"
                "/show_settings (Owner)\n"
-               "/restart (Owner)")
+               "/restart (Owner)\n"
+               "/reset_leaderboard (Owner)\n"
+               "/broadcast <message> (Owner)")
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
         ok = send_text_with_fallback(cid, txt, reply_markup=markup)
         try:
-            if ok:
-                bot.answer_callback_query(c.id, "Opened commands.")
-            else:
-                bot.answer_callback_query(c.id, "❌ Could not open commands.", show_alert=True)
-        except:
-            pass
+            if ok: bot.answer_callback_query(c.id, "Opened commands.")
+            else: bot.answer_callback_query(c.id, "❌ Could not open commands.", show_alert=True)
+        except: pass
         return
 
-    # LEADERBOARD -> send new message
     if data == 'menu_lb':
         top = db.get_top_players(10)
         txt = "🏆 <b>Global Leaderboard</b>\n\n"
@@ -757,30 +807,21 @@ def handle_callbacks(c):
         markup.add(InlineKeyboardButton("🔙 Back", callback_data='menu_back'))
         ok = send_text_with_fallback(cid, txt, reply_markup=markup)
         try:
-            if ok:
-                bot.answer_callback_query(c.id, "Opened leaderboard.")
-            else:
-                bot.answer_callback_query(c.id, "❌ Could not open leaderboard.", show_alert=True)
-        except:
-            pass
+            if ok: bot.answer_callback_query(c.id, "Opened leaderboard.")
+            else: bot.answer_callback_query(c.id, "❌ Could not open leaderboard.", show_alert=True)
+        except: pass
         return
 
-    # MENU BACK -> rebuild menu as new message
     if data == 'menu_back':
         try:
-            show_main_menu(c.message)  # show_main_menu will send a new menu message
-            try:
-                bot.answer_callback_query(c.id, "Menu opened.")
-            except:
-                pass
-        except Exception:
-            try:
-                bot.answer_callback_query(c.id, "❌ Could not open menu.", show_alert=True)
-            except:
-                pass
+            show_main_menu(c.message)
+            try: bot.answer_callback_query(c.id, "Menu opened.")
+            except: pass
+        except:
+            try: bot.answer_callback_query(c.id, "❌ Could not open menu.", show_alert=True)
+            except: pass
         return
 
-    # MENU STATS -> show user's stats
     if data == 'menu_stats':
         try:
             user = db.get_user(uid, c.from_user.first_name or c.from_user.username or "Player")
@@ -788,107 +829,84 @@ def handle_callbacks(c):
             gid = c.message.chat.id
             if gid in games:
                 session_points = games[gid].players_scores.get(uid, 0)
+            # user tuple indices: 0:id,1:name,2:join_date,3:games_played,4:wins,5:total_score,6:hint_balance,7:is_banned,8:cash_balance
+            cash_bal = user[8] if len(user) > 8 else 0
             txt = (f"📋 <b>Your Stats</b>\n"
                    f"Name: {html.escape(user[1])}\n"
                    f"Total Score: {user[5]}\n"
                    f"Wins: {user[4]}\n"
                    f"Games Played: {user[3]}\n"
                    f"Session Points (this chat): {session_points}\n"
-                   f"Hint Balance: {user[6]}")
-            ok = send_text_with_fallback(cid, txt)
+                   f"Hint Balance: {user[6]}\n"
+                   f"Cash Balance (₹): {cash_bal}")
+            ok = send_text_with_fallback(c.message.chat.id, txt)
             try:
-                if ok:
-                    bot.answer_callback_query(c.id, "Stats opened.")
-                else:
-                    bot.answer_callback_query(c.id, "❌ Could not open stats.", show_alert=True)
-            except:
-                pass
+                if ok: bot.answer_callback_query(c.id, "Stats opened.")
+                else: bot.answer_callback_query(c.id, "❌ Could not open stats.", show_alert=True)
+            except: pass
         except Exception:
             logger.exception("menu_stats handler error")
-            try:
-                bot.answer_callback_query(c.id, "❌ Could not open stats.", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "❌ Could not open stats.", show_alert=True)
+            except: pass
         return
 
-    # GAME callbacks (guess/hint/score) remain same behavior
+    # Game callbacks (unchanged logic; kept robust)
     if data == 'game_guess':
         if cid not in games:
-            try:
-                bot.answer_callback_query(c.id, "❌ Game Over or Expired.", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "❌ Game Over or Expired.", show_alert=True)
+            except: pass
             return
         try:
             username = c.from_user.username or c.from_user.first_name
             msg = bot.send_message(cid, f"@{username} Type the word now:", reply_markup=ForceReply(selective=True))
             bot.register_next_step_handler(msg, process_word_guess)
-            try:
-                bot.answer_callback_query(c.id, "✍️ Type your guess.")
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "✍️ Type your guess.")
+            except: pass
         except Exception:
             logger.exception("game_guess handler error")
-            try:
-                bot.answer_callback_query(c.id, "❌ Could not open input.", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "❌ Could not open input.", show_alert=True)
+            except: pass
         return
 
     if data == 'game_hint':
         if cid not in games:
-            try:
-                bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
+            except: pass
             return
         user_data = db.get_user(uid, c.from_user.first_name)
         if user_data and user_data[6] < HINT_COST:
-            try:
-                bot.answer_callback_query(c.id, f"❌ Need {HINT_COST} pts. Balance: {user_data[6]}", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, f"❌ Need {HINT_COST} pts. Balance: {user_data[6]}", show_alert=True)
+            except: pass
             return
         game = games[cid]
         hidden = [w for w in game.words if w not in game.found]
         if not hidden:
-            try:
-                bot.answer_callback_query(c.id, "All words found!", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "All words found!", show_alert=True)
+            except: pass
             return
         reveal = random.choice(hidden)
         db.update_stats(uid, score_delta=0, hint_delta=-HINT_COST)
         try:
             bot.send_message(cid, f"💡 <b>HINT:</b> <code>{reveal}</code>\nUser: {html.escape(c.from_user.first_name)} (-{HINT_COST} pts)")
-            try:
-                bot.answer_callback_query(c.id, "Hint revealed.")
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "Hint revealed.")
+            except: pass
         except Exception:
             logger.exception("game_hint send failed")
-            try:
-                bot.answer_callback_query(c.id, "❌ Could not send hint.", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "❌ Could not send hint.", show_alert=True)
+            except: pass
         return
 
     if data == 'game_score':
         if cid not in games:
-            try:
-                bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
+            except: pass
             return
         game = games[cid]
         if not game.players_scores:
-            try:
-                bot.answer_callback_query(c.id, "No scores yet. Be the first!", show_alert=True)
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "No scores yet. Be the first!", show_alert=True)
+            except: pass
             return
         leaderboard = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
-        # Build rows for image (top 10)
         rows = []
         for i, (uid_score, pts) in enumerate(leaderboard, 1):
             try:
@@ -900,37 +918,30 @@ def handle_callbacks(c):
         img_bio = LeaderboardRenderer.draw_session_leaderboard(rows[:10])
         try:
             bot.send_photo(cid, img_bio, caption="📊 Session Leaderboard")
-            try:
-                bot.answer_callback_query(c.id, "Leaderboard shown.")
-            except:
-                pass
+            try: bot.answer_callback_query(c.id, "Leaderboard shown.")
+            except: pass
         except:
-            # fallback to text alert (short)
             txt = "📊 Session Leaderboard\n\n"
             for idx, name, pts in rows[:10]:
                 txt += f"{idx}. {html.escape(name)} - {pts} pts\n"
-            # send as a message (safer than alert if long)
             ok = send_text_with_fallback(cid, txt)
             try:
-                if ok:
-                    bot.answer_callback_query(c.id, "Leaderboard opened.")
-                else:
-                    bot.answer_callback_query(c.id, "❌ Could not show leaderboard.", show_alert=True)
-            except:
-                pass
+                if ok: bot.answer_callback_query(c.id, "Leaderboard opened.")
+                else: bot.answer_callback_query(c.id, "❌ Could not show leaderboard.", show_alert=True)
+            except: pass
         return
 
-    # If unknown callback
     try:
         bot.answer_callback_query(c.id, "")
     except:
         pass
 
 # ==========================================
-# 🎮 GAME COMMANDS & core logic
+# Game start functions (support modes), hint, issue, scorecard, etc.
+# (Reused from previous version)
 # ==========================================
-@bot.message_handler(commands=['new', 'new_hard'])
-def start_game(m):
+
+def start_game_with_mode(m, mode='default'):
     cid = m.chat.id
     if cid in games:
         if time.time() - games[cid].last_activity < GAME_DURATION:
@@ -941,11 +952,18 @@ def start_game(m):
         bot.reply_to(m, "🚫 You are banned from playing.")
         return
     bot.send_chat_action(cid, 'upload_photo')
-    is_hard = 'hard' in m.text.lower()
-    session = GameSession(cid, is_hard)
+    is_hard = (mode == 'hard')
+    pool = None
+    if mode == 'physics':
+        pool = PHYSICS_WORDS
+    elif mode == 'chemistry':
+        pool = CHEMISTRY_WORDS
+    elif mode == 'jee':
+        pool = JEE_WORDS
+    session = GameSession(cid, is_hard, duration=GAME_DURATION, word_pool=pool)
     games[cid] = session
     db.update_stats(m.from_user.id, games_played_delta=1)
-    img_bio = GridRenderer.draw(session.grid, is_hard)
+    img_bio = GridRenderer.draw(session.grid, placements=session.placements, found=session.found, is_hard=is_hard)
     try:
         img_bio.seek(0)
     except:
@@ -977,26 +995,41 @@ def start_game(m):
                 bot.send_message(cid, caption, reply_markup=markup)
             except Exception:
                 logger.exception("Failed to send game start message")
-    # store message id for timer updates
     try:
         if sent_msg:
             session.message_id = sent_msg.message_id
     except Exception:
         logger.exception("Could not set session.message_id")
-
-    # start background countdown timer for session
     try:
         session.start_timer()
     except Exception:
         logger.exception("Failed to start session timer")
-
-    # Notify owner that a game started (as requested)
     if OWNER_ID:
         try:
             starter_name = m.from_user.first_name or m.from_user.username or str(m.from_user.id)
-            bot.send_message(OWNER_ID, f"🎮 Game started in chat {cid} by {starter_name} (ID: {m.from_user.id}). Mode: {'Hard' if is_hard else 'Normal'}")
+            bot.send_message(OWNER_ID, f"🎮 Game started in chat {cid} by {starter_name} (ID: {m.from_user.id}). Mode: {mode}")
         except Exception:
             logger.exception("Failed to notify owner about new game")
+
+@bot.message_handler(commands=['new'])
+def start_game(m):
+    start_game_with_mode(m, mode='default')
+
+@bot.message_handler(commands=['new_hard'])
+def start_game_hard(m):
+    start_game_with_mode(m, mode='hard')
+
+@bot.message_handler(commands=['new_physics'])
+def start_game_physics(m):
+    start_game_with_mode(m, mode='physics')
+
+@bot.message_handler(commands=['new_chemistry'])
+def start_game_chem(m):
+    start_game_with_mode(m, mode='chemistry')
+
+@bot.message_handler(commands=['new_jee'])
+def start_game_jee(m):
+    start_game_with_mode(m, mode='jee')
 
 @bot.message_handler(commands=['hint'])
 def hint_cmd(m):
@@ -1053,15 +1086,16 @@ def scorecard(m):
     gid = m.chat.id
     if gid in games:
         session_points = games[gid].players_scores.get(uid, 0)
+    cash_bal = u[8] if len(u) > 8 else 0
     txt = (f"📋 <b>Your Scorecard</b>\n"
            f"Name: {html.escape(u[1])}\n"
            f"Total Score: {u[5]}\n"
            f"Wins: {u[4]}\n"
            f"Session Points (this chat): {session_points}\n"
-           f"Hint Balance: {u[6]}")
+           f"Hint Balance: {u[6]}\n"
+           f"Cash Balance (₹): {cash_bal}")
     bot.reply_to(m, txt)
 
-# alias: /mystats should behave same as /scorecard (user requested)
 @bot.message_handler(commands=['mystats'])
 def mystats(m):
     scorecard(m)
@@ -1076,7 +1110,7 @@ def leaderboard(m):
     top = db.get_top_players()
     txt = "🏆 <b>TOP 10 PLAYERS</b> 🏆\n\n"
     for i, (name, score) in enumerate(top, 1):
-        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
         txt += f"{medal} <b>{html.escape(name)}</b> - {score} pts\n"
     bot.reply_to(m, txt)
 
@@ -1092,8 +1126,9 @@ def force_end(m):
         bot.reply_to(m, "No active game to stop.")
 
 # ==========================================
-# Admin / owner commands: addpoints, addadmin, deladmin, admins, settings, restart
+# Admin commands: addpoints (default -> hint balance), addadmin, deladmin, admins, settings, restart, reset_leaderboard, broadcast
 # ==========================================
+
 @bot.message_handler(commands=['addpoints'])
 def addpoints_cmd(m):
     if m.from_user.id != OWNER_ID:
@@ -1101,7 +1136,7 @@ def addpoints_cmd(m):
         return
     parts = m.text.split()
     if len(parts) < 3:
-        bot.reply_to(m, "Usage: /addpoints <username_or_id> <amount> [balance|score]")
+        bot.reply_to(m, "Usage: /addpoints <username_or_id> <amount> [balance|score]\nNote: default is balance (hint balance). Use 'score' to add to score.")
         return
     target = parts[1].strip()
     try:
@@ -1109,7 +1144,7 @@ def addpoints_cmd(m):
     except:
         bot.reply_to(m, "Amount must be a number.")
         return
-    mode = parts[3].strip().lower() if len(parts) >= 4 else 'score'
+    mode = parts[3].strip().lower() if len(parts) >= 4 else 'balance'
     target_id = None
     chat = None
     if target.lstrip('-').isdigit():
@@ -1123,20 +1158,41 @@ def addpoints_cmd(m):
         except Exception as e:
             bot.reply_to(m, f"❌ Could not find user {target}. They must have a public username or have started the bot.")
             return
-    # Ensure user exists
     db.get_user(target_id, getattr(chat, 'username', 'Player') if chat else 'Player')
     try:
-        if mode == 'balance':
-            db.update_stats(target_id, score_delta=0, hint_delta=amount)
+        if mode == 'score':
+            # add to total_score (this will auto-redeem if threshold reached)
+            db.update_stats(target_id, score_delta=amount)
+            bot.reply_to(m, f"✅ Added {amount} points to score of {target} (ID: {target_id}).")
         else:
-            db.update_stats(target_id, score_delta=amount, hint_delta=0)
-        bot.reply_to(m, f"✅ Added {amount} ({mode}) to {target} (ID: {target_id}).")
+            # default: add to hint balance
+            db.update_stats(target_id, score_delta=0, hint_delta=amount)
+            bot.reply_to(m, f"✅ Added {amount} to hint balance of {target} (ID: {target_id}).")
         try:
             bot.send_message(target_id, f"💸 You received {amount} pts ({mode}) from the owner.")
         except:
             pass
     except Exception as e:
         bot.reply_to(m, f"❌ Failed to add points: {e}")
+
+@bot.message_handler(commands=['broadcast'])
+@owner_only
+def broadcast_cmd(m):
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /broadcast <message>")
+        return
+    msg = parts[1]
+    users = db.get_all_users()
+    success = 0
+    fail = 0
+    for uid in users:
+        try:
+            bot.send_message(uid, msg)
+            success += 1
+        except Exception:
+            fail += 1
+    bot.reply_to(m, f"Broadcast complete. Success: {success}, Failed: {fail}")
 
 @bot.message_handler(commands=['addadmin'])
 @owner_only
@@ -1239,24 +1295,34 @@ def show_settings(m):
            f"HINT_COST: {HINT_COST}\n"
            f"START_IMG_URL: {START_IMG_URL}\n"
            f"CHANNEL_USERNAME: {CHANNEL_USERNAME}\n"
-           f"SUPPORT_GROUP_LINK: {SUPPORT_GROUP_LINK}\n")
+           f"SUPPORT_GROUP_LINK: {SUPPORT_GROUP_LINK}\n"
+           f"REDEEM_THRESHOLD: {REDEEM_THRESHOLD}\n"
+           f"REDEEM_AMOUNT_RS: {REDEEM_AMOUNT_RS}\n")
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['restart'])
 @owner_only
 def restart_cmd(m):
     bot.reply_to(m, "🔁 Restarting bot now...")
-    # flush logs and restart via execv
     try:
         python = sys.executable
         os.execv(python, [python] + sys.argv)
     except Exception:
-        # Last resort: exit process (host may restart)
         logger.exception("Restart via exec failed, exiting.")
         os._exit(0)
 
+@bot.message_handler(commands=['reset_leaderboard'])
+@owner_only
+def reset_leaderboard_cmd(m):
+    try:
+        db.reset_leaderboard()
+        bot.reply_to(m, "✅ Leaderboard reset. All players' scores and wins set to 0.")
+    except Exception:
+        logger.exception("reset_leaderboard failed")
+        bot.reply_to(m, "❌ Failed to reset leaderboard.")
+
 # ==========================================
-# /define command implemented using dictionaryapi.dev
+# /define and other handlers
 # ==========================================
 @bot.message_handler(commands=['define'])
 def define_cmd(m):
@@ -1282,19 +1348,20 @@ def define_cmd(m):
                     bot.reply_to(m, txt)
                     return
         bot.reply_to(m, f"❌ No definition found for '{word}'.")
-    except Exception as e:
+    except Exception:
         logger.exception("define error")
         bot.reply_to(m, "❌ Error fetching definition.")
 
 # ==========================================
-# CORE GUESS PROCESSING & END GAME
+# Guess processing (updates image with line) - same as previous version but kept here
 # ==========================================
 def process_word_guess(m):
     cid = m.chat.id
     if cid not in games:
         try:
             bot.reply_to(m, "❌ No active game in this chat.")
-        except: pass
+        except:
+            pass
         return
     word = (m.text or "").strip().upper()
     if not word:
@@ -1313,15 +1380,18 @@ def process_word_guess(m):
     game.players_last_guess[uid] = now
     try:
         bot.delete_message(cid, m.message_id)
-    except: pass
+    except:
+        pass
     if word in game.words:
         if word in game.found:
-            msg = bot.send_message(cid, f"⚠️ <b>{word}</b> is already found!")
-            threading.Timer(3, lambda: bot.delete_message(cid, msg.message_id)).start()
+            try:
+                msg = bot.send_message(cid, f"⚠️ <b>{word}</b> is already found!")
+                threading.Timer(3, lambda: bot.delete_message(cid, msg.message_id)).start()
+            except:
+                pass
         else:
             game.found.add(word)
             game.last_activity = time.time()
-            # scoring
             if len(game.found) == 1:
                 points = FIRST_BLOOD_POINTS
             elif len(game.found) == len(game.words):
@@ -1330,22 +1400,77 @@ def process_word_guess(m):
                 points = NORMAL_POINTS
             prev = game.players_scores.get(uid, 0)
             game.players_scores[uid] = prev + points
+            # Add points to user's total_score (this will trigger auto-redeem if threshold crossed)
             db.update_stats(uid, score_delta=points)
-            reply = bot.send_message(cid, f"✨ <b>Excellent!</b> {html.escape(user_name)} found <code>{word}</code> (+{points} pts) 🎯")
-            threading.Timer(5, lambda: bot.delete_message(cid, reply.message_id)).start()
+            try:
+                reply = bot.send_message(cid, f"✨ <b>Excellent!</b> {html.escape(user_name)} found <code>{word}</code> (+{points} pts) 🎯")
+                threading.Timer(5, lambda: bot.delete_message(cid, reply.message_id)).start()
+            except:
+                pass
+            # regenerate image with lines and replace previous photo
+            try:
+                img_bio = GridRenderer.draw(game.grid, placements=game.placements, found=game.found, is_hard=game.is_hard)
+                try:
+                    img_bio.seek(0)
+                except:
+                    pass
+                sent_msg = None
+                try:
+                    sent_msg = bot.send_photo(cid, img_bio, caption=(f"🔥 <b>WORD VORTEX</b>\n"
+                                                                    f"Mode: {'Hard' if game.is_hard else 'Normal'}\n"
+                                                                    f"⏱ Time Left: {(max(0, int(game.duration - (time.time() - game.start_time)))//60)}:{(max(0, int(game.duration - (time.time() - game.start_time)))%60):02d}\n\n"
+                                                                    f"<b>👇 WORDS TO FIND:</b>\n{game.get_hint_text()}"),
+                                              reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔍 Found It!", callback_data='game_guess'),
+                                                                                      InlineKeyboardButton("💡 Hint (-50)", callback_data='game_hint'),
+                                                                                      InlineKeyboardButton("📊 Score", callback_data='game_score')))
+                except Exception:
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
+                            tf.write(img_bio.getvalue())
+                            temp_path = tf.name
+                        with open(temp_path, 'rb') as f:
+                            sent_msg = bot.send_photo(cid, f, caption=(f"🔥 <b>WORD VORTEX</b>\n"
+                                                                      f"Mode: {'Hard' if game.is_hard else 'Normal'}\n"
+                                                                      f"⏱ Time Left: {(max(0, int(game.duration - (time.time() - game.start_time)))//60)}:{(max(0, int(game.duration - (time.time() - game.start_time)))%60):02d}\n\n"
+                                                                      f"<b>👇 WORDS TO FIND:</b>\n{game.get_hint_text()}"),
+                                                  reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔍 Found It!", callback_data='game_guess'),
+                                                                                          InlineKeyboardButton("💡 Hint (-50)", callback_data='game_hint'),
+                                                                                          InlineKeyboardButton("📊 Score", callback_data='game_score')))
+                        try:
+                            os.unlink(temp_path)
+                        except:
+                            pass
+                    except Exception:
+                        logger.exception("Failed to send updated grid image")
+                try:
+                    old_mid = game.message_id
+                    if old_mid:
+                        try:
+                            bot.delete_message(cid, old_mid)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    if sent_msg:
+                        game.message_id = sent_msg.message_id
+                except Exception:
+                    logger.exception("Could not set new session.message_id")
+            except Exception:
+                logger.exception("Error regenerating grid image after found word")
             if len(game.found) == len(game.words):
                 end_game_session(cid, "win", uid)
     else:
         try:
             msg = bot.send_message(cid, f"❌ {html.escape(user_name)} — '{html.escape(word)}' is not in the list.")
             threading.Timer(3, lambda: bot.delete_message(cid, msg.message_id)).start()
-        except: pass
+        except:
+            pass
 
 def end_game_session(cid, reason, winner_id=None):
     if cid not in games:
         return
     game = games[cid]
-    # mark inactive to stop timer thread
     try:
         game.active = False
     except:
@@ -1353,7 +1478,7 @@ def end_game_session(cid, reason, winner_id=None):
 
     if reason == "win":
         winner = db.get_user(winner_id, "Unknown")
-        db.update_stats(winner_id, win=True)
+        db.update_stats(winner_id, score_delta=0, win=True)
         db.record_game(cid, winner_id)
         top_players = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
         summary = ""
@@ -1363,7 +1488,7 @@ def end_game_session(cid, reason, winner_id=None):
                 name = user[1] if user else str(uid_score)
             except:
                 name = str(uid_score)
-            medal = "🥇" if idx==1 else "🥈" if idx==2 else "🥉" if idx==3 else f"{idx}."
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
             summary += f"{medal} <b>{html.escape(name)}</b> - {pts} pts\n"
         txt = (f"🏆 <b>GAME OVER! VICTORY!</b>\n\n"
                f"👑 <b>MVP:</b> {html.escape(winner[1])}\n"
@@ -1380,7 +1505,6 @@ def end_game_session(cid, reason, winner_id=None):
         except Exception:
             logger.exception("Failed to send stopped message")
     elif reason == "timeout":
-        # build timeout summary
         found_count = len(game.found)
         remaining = [w for w in game.words if w not in game.found]
         top_players = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
@@ -1391,7 +1515,7 @@ def end_game_session(cid, reason, winner_id=None):
                 name = user[1] if user else str(uid_score)
             except:
                 name = str(uid_score)
-            medal = "🥇" if idx==1 else "🥈" if idx==2 else "🥉" if idx==3 else f"{idx}."
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
             summary += f"{medal} <b>{html.escape(name)}</b> - {pts} pts\n"
         rem_txt = ", ".join(remaining) if remaining else "None"
         txt = (f"⏰ <b>TIME'S UP!</b>\n\n"
@@ -1403,7 +1527,6 @@ def end_game_session(cid, reason, winner_id=None):
             bot.send_message(cid, txt)
         except Exception:
             logger.exception("Failed to send timeout summary")
-    # cleanup
     try:
         del games[cid]
     except KeyError:
