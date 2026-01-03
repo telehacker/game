@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  WORD VORTEX ULTIMATE v10.0 - FINAL COMPLETE EDITION             ║
-║  ✅ ALL BUTTONS 100% WORKING                                      ║
-║  ✅ Achievements system (5+ badges)                               ║
-║  ✅ Shop system (buy hints, boosters)                             ║
-║  ✅ Review system (full interactive)                              ║
-║  ✅ Redeem system (full interactive)                              ║
-║  ✅ Commands list working                                         ║
+║  WORD VORTEX ULTIMATE v10.5 - COMPLETE + NEW FEATURES            ║
+║  ✅ How to Play guide                                             ║
+║  ✅ Force channel join (mandatory)                                ║
+║  ✅ Owner notifications (start, verify, group)                    ║
+║  ✅ /define word - Dictionary feature                             ║
+║  ✅ Enhanced scoring system                                       ║
+║  ✅ Per-feature help                                              ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -29,8 +29,9 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID  # Group for notifications
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
-FORCE_JOIN = os.environ.get("FORCE_JOIN", "False").lower() in ("1", "true", "yes")
+FORCE_JOIN = True  # Always force join
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
@@ -39,22 +40,24 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Game Constants
-FIRST_BLOOD = 10
-NORMAL_PTS = 2
-FINISHER = 5
+# Enhanced Game Constants
+FIRST_BLOOD = 15  # Increased
+NORMAL_PTS = 3    # Increased
+FINISHER = 10     # Increased
 HINT_COST = 50
 COOLDOWN = 2
 DAILY_REWARD = 100
 STREAK_BONUS = 20
 REFERRAL_BONUS = 200
+COMBO_BONUS = 5   # Bonus for consecutive words
+SPEED_BONUS = 5   # Bonus for quick finds
 BAD_WORDS = {"SEX","PORN","NUDE","XXX","DICK","COCK","PUSSY","FUCK","SHIT","BITCH","ASS","HENTAI","BOOBS"}
 
 # Word Pools
-PHYSICS_WORDS = ["FORCE","ENERGY","MOMENTUM","VELOCITY","WAVE","PHOTON","GRAVITY","ATOM"]
-CHEMISTRY_WORDS = ["MOLECULE","REACTION","BOND","ION","ACID","BASE","SALT","ELECTRON"]
-MATH_WORDS = ["INTEGRAL","DERIVATIVE","MATRIX","VECTOR","CALCULUS","LIMIT","ALGORITHM"]
-JEE_WORDS = ["KINEMATICS","THERMODYNAMICS","DIFFERENTIAL","ELECTROSTATICS"]
+PHYSICS_WORDS = ["FORCE","ENERGY","MOMENTUM","VELOCITY","WAVE","PHOTON","GRAVITY","ATOM","QUANTUM","ELECTRON"]
+CHEMISTRY_WORDS = ["MOLECULE","REACTION","BOND","ION","ACID","BASE","SALT","ELECTRON","PROTON","NEUTRON"]
+MATH_WORDS = ["INTEGRAL","DERIVATIVE","MATRIX","VECTOR","CALCULUS","LIMIT","ALGORITHM","THEOREM","PROOF"]
+JEE_WORDS = ["KINEMATICS","THERMODYNAMICS","DIFFERENTIAL","ELECTROSTATICS","OPTICS","MECHANICS"]
 
 # Achievements Data
 ACHIEVEMENTS = {
@@ -74,6 +77,115 @@ SHOP_ITEMS = {
     "premium_7d": {"name": "Premium 7 Days", "price": 1500, "type": "premium", "value": 7},
 }
 
+# Per-Feature Help
+FEATURE_HELP = {
+    "play": """🎮 <b>HOW TO PLAY</b>
+
+1️⃣ Click "🎮 Play" button
+2️⃣ Select game mode (Normal/Hard/Chemistry/Physics/Math/JEE)
+3️⃣ Grid image will appear with hidden words
+4️⃣ Find words in the grid (horizontal, vertical, diagonal)
+5️⃣ Click "🔍 Found It!" and type the word
+6️⃣ Earn points for each word found!
+
+<b>🏆 SCORING:</b>
+🥇 First Blood: +15 pts (first word)
+⚡ Normal Word: +3 pts
+🎯 Finisher: +10 pts (last word)
+⚡ Speed Bonus: +5 pts (find in 10 sec)
+🔥 Combo Bonus: +5 pts (consecutive finds)
+
+<b>🎯 MODES:</b>
+⚡ Normal - 8x8 grid, 6 words
+🔥 Hard - 10x10 grid, 8 words
+🧪 Chemistry - Chemistry terms
+⚛️ Physics - Physics vocabulary
+📐 Math - Mathematics terms
+🎓 JEE - JEE preparation words""",
+
+    "achievements": """🏅 <b>ACHIEVEMENTS GUIDE</b>
+
+Unlock badges by completing challenges!
+
+<b>Available Achievements:</b>
+🥇 <b>First Victory</b> - Win your first game (+50 pts)
+📚 <b>Word Finder</b> - Find 50 total words (+100 pts)
+⚡ <b>Speed Demon</b> - Find a word in 5 seconds (+75 pts)
+🔥 <b>Streak Master</b> - Maintain 7-day login streak (+150 pts)
+💰 <b>Millionaire</b> - Earn 10,000 total points (+500 pts)
+
+Achievements unlock automatically when you reach the milestone!""",
+
+    "shop": """🛒 <b>SHOP GUIDE</b>
+
+Buy power-ups and boosters!
+
+<b>Available Items:</b>
+💡 5 Hints Pack - 200 pts
+💡 20 Hints Pack - 700 pts
+⚡ XP Booster 2x - 500 pts
+👑 Premium 1 Day - 300 pts
+👑 Premium 7 Days - 1500 pts
+
+<b>How to Buy:</b>
+1. Click "🛒 Shop" button
+2. Select item
+3. Confirm purchase
+4. Item delivered instantly!""",
+
+    "redeem": """💰 <b>REDEEM GUIDE</b>
+
+Cash out your points to real money!
+
+<b>Conversion Rate:</b>
+10 points = ₹1
+
+<b>Minimum:</b> 500 points (₹50)
+
+<b>How to Redeem:</b>
+1. Click "💰 Redeem" button
+2. Click "🚀 Start Redeem"
+3. Enter points (min 500)
+4. Enter your UPI ID
+5. Wait 24-48 hours for payment
+
+<b>Supported UPI:</b>
+• PayTM • PhonePe • GooglePay
+• Any bank UPI""",
+
+    "daily": """🎁 <b>DAILY REWARD GUIDE</b>
+
+Claim free points every day!
+
+<b>Base Reward:</b> 100 pts
+
+<b>Streak Bonus:</b>
+Day 1: +100 pts
+Day 2: +120 pts
+Day 3: +140 pts
+...
+Day 7+: +240 pts
+
+<b>How to Claim:</b>
+Click "🎁 Daily" button once per day
+
+Keep your streak alive for bigger rewards!""",
+
+    "referral": """👥 <b>REFERRAL GUIDE</b>
+
+Invite friends and earn!
+
+<b>Reward:</b> 200 pts per friend
+
+<b>How it Works:</b>
+1. Click "👥 Invite" button
+2. Copy your unique link
+3. Share with friends
+4. When they join, you get 200 pts!
+
+No duplicate rewards - each friend counted once.""",
+}
+
 # User states for multi-step interactions
 user_states = {}
 
@@ -82,7 +194,7 @@ user_states = {}
 # ═══════════════════════════════════════════════════════════════════
 class Database:
     def __init__(self):
-        self.db = "word_vortex_v10.db"
+        self.db = "word_vortex_v105.db"
         self._init()
 
     def _conn(self):
@@ -101,7 +213,7 @@ class Database:
             streak INTEGER DEFAULT 0, last_daily TEXT,
             referrer_id INTEGER, is_premium INTEGER DEFAULT 0,
             is_banned INTEGER DEFAULT 0, achievements TEXT DEFAULT '[]',
-            words_found INTEGER DEFAULT 0
+            words_found INTEGER DEFAULT 0, verified INTEGER DEFAULT 0
         )""")
 
         c.execute("CREATE TABLE IF NOT EXISTS admins (admin_id INTEGER PRIMARY KEY)")
@@ -321,6 +433,17 @@ class Database:
 db = Database()
 
 # ═══════════════════════════════════════════════════════════════════
+# NOTIFICATION SYSTEM
+# ═══════════════════════════════════════════════════════════════════
+def notify_owner(message: str):
+    """Send notification to owner/notification group"""
+    if NOTIFICATION_GROUP:
+        try:
+            bot.send_message(NOTIFICATION_GROUP, message, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Failed to send notification: {e}")
+
+# ═══════════════════════════════════════════════════════════════════
 # WORD SOURCE
 # ═══════════════════════════════════════════════════════════════════
 ALL_WORDS: List[str] = []
@@ -435,7 +558,7 @@ class ImageRenderer:
 
         # Footer
         draw.rectangle([0, h-footer, w, h], fill="#0d1929")
-        draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.0",
+        draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
 
         bio = io.BytesIO()
@@ -463,6 +586,8 @@ class GameSession:
         self.found: set = set()
         self.players: Dict[int, int] = {}
         self.last_guess: Dict[int, float] = {}
+        self.last_find_time: Dict[int, float] = {}
+        self.combo_count: Dict[int, int] = {}
         self.message_id: Optional[int] = None
 
         word_pool = custom_words if custom_words else ALL_WORDS
@@ -622,6 +747,7 @@ def handle_guess(msg):
 
     if word not in session.words:
         bot.reply_to(msg, f"❌ '{word}' not in list!")
+        session.combo_count[uid] = 0  # Reset combo
         return
 
     if word in session.found:
@@ -630,15 +756,32 @@ def handle_guess(msg):
 
     session.found.add(word)
 
+    # Calculate points with bonuses
+    pts = 0
+    bonuses = []
+
     if len(session.found) == 1:
-        pts = FIRST_BLOOD
-        bonus = " 🥇FIRST BLOOD!"
+        pts += FIRST_BLOOD
+        bonuses.append("🥇FIRST BLOOD")
     elif len(session.found) == len(session.words):
-        pts = FINISHER
-        bonus = " 🏆FINISHER!"
+        pts += FINISHER
+        bonuses.append("🏆FINISHER")
     else:
-        pts = NORMAL_PTS
-        bonus = ""
+        pts += NORMAL_PTS
+
+    # Speed bonus
+    find_time = time.time()
+    last_find = session.last_find_time.get(uid, session.start_time)
+    if find_time - last_find < 10:
+        pts += SPEED_BONUS
+        bonuses.append("⚡SPEED +5")
+    session.last_find_time[uid] = find_time
+
+    # Combo bonus
+    session.combo_count[uid] = session.combo_count.get(uid, 0) + 1
+    if session.combo_count[uid] >= 2:
+        pts += COMBO_BONUS
+        bonuses.append(f"🔥COMBO x{session.combo_count[uid]}")
 
     session.players[uid] = session.players.get(uid, 0) + pts
     db.add_score(uid, pts)
@@ -653,7 +796,8 @@ def handle_guess(msg):
         if db.add_achievement(uid, "first_win"):
             bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
 
-    bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus}")
+    bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
+    bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
 
     update_game(cid)
 
@@ -666,11 +810,10 @@ def handle_guess(msg):
         del games[cid]
 
 # ═══════════════════════════════════════════════════════════════════
-# MENUS
+# CHANNEL JOIN CHECK
 # ═══════════════════════════════════════════════════════════════════
-
 def is_subscribed(user_id: int) -> bool:
-    if not FORCE_JOIN or not CHANNEL_USERNAME:
+    if not CHANNEL_USERNAME:
         return True
     if OWNER_ID and user_id == OWNER_ID:
         return True
@@ -678,7 +821,18 @@ def is_subscribed(user_id: int) -> bool:
         status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
         return status in ("creator", "administrator", "member")
     except:
-        return True
+        return False
+
+def must_join_menu():
+    kb = InlineKeyboardMarkup()
+    if CHANNEL_USERNAME:
+        kb.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"))
+    kb.add(InlineKeyboardButton("✅ Verify Membership", callback_data="verify"))
+    return kb
+
+# ═══════════════════════════════════════════════════════════════════
+# MENUS
+# ═══════════════════════════════════════════════════════════════════
 
 def main_menu():
     kb = InlineKeyboardMarkup(row_width=2)
@@ -691,26 +845,47 @@ def main_menu():
 
     kb.row(
         InlineKeyboardButton("🎮 Play", callback_data="play"),
-        InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard")
+        InlineKeyboardButton("📖 How to Play", callback_data="howtoplay")
     )
     kb.row(
-        InlineKeyboardButton("👤 Profile", callback_data="profile"),
-        InlineKeyboardButton("🏅 Achievements", callback_data="achievements")
+        InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard"),
+        InlineKeyboardButton("👤 Profile", callback_data="profile")
     )
     kb.row(
-        InlineKeyboardButton("🎁 Daily", callback_data="daily"),
-        InlineKeyboardButton("🛒 Shop", callback_data="shop")
+        InlineKeyboardButton("🏅 Achievements", callback_data="achievements"),
+        InlineKeyboardButton("🎁 Daily", callback_data="daily")
     )
     kb.row(
-        InlineKeyboardButton("💰 Redeem", callback_data="redeem_menu"),
-        InlineKeyboardButton("⭐ Review", callback_data="review_menu")
+        InlineKeyboardButton("🛒 Shop", callback_data="shop"),
+        InlineKeyboardButton("💰 Redeem", callback_data="redeem_menu")
     )
     kb.row(
-        InlineKeyboardButton("👥 Invite", callback_data="referral"),
-        InlineKeyboardButton("📋 Commands", callback_data="commands")
+        InlineKeyboardButton("⭐ Review", callback_data="review_menu"),
+        InlineKeyboardButton("👥 Invite", callback_data="referral")
+    )
+    kb.row(
+        InlineKeyboardButton("📋 Commands", callback_data="commands"),
+        InlineKeyboardButton("ℹ️ Help", callback_data="help_menu")
     )
     kb.row(InlineKeyboardButton("👨‍💻 Support", url=SUPPORT_GROUP))
 
+    return kb
+
+def help_menu():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        InlineKeyboardButton("🎮 Play", callback_data="help_play"),
+        InlineKeyboardButton("🏅 Achievements", callback_data="help_achievements")
+    )
+    kb.row(
+        InlineKeyboardButton("🛒 Shop", callback_data="help_shop"),
+        InlineKeyboardButton("💰 Redeem", callback_data="help_redeem")
+    )
+    kb.row(
+        InlineKeyboardButton("🎁 Daily", callback_data="help_daily"),
+        InlineKeyboardButton("👥 Referral", callback_data="help_referral")
+    )
+    kb.row(InlineKeyboardButton("« Back", callback_data="back_main"))
     return kb
 
 def game_modes_menu():
@@ -750,6 +925,20 @@ def cmd_start(m):
     username = m.from_user.username or ""
     uid = m.from_user.id
 
+    # Check channel join first
+    if not is_subscribed(uid):
+        txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
+               f"⚠️ <b>You must join our channel to use this bot!</b>\n\n"
+               f"1️⃣ Click 'Join Channel' button\n"
+               f"2️⃣ Join the channel\n"
+               f"3️⃣ Click 'Verify Membership'")
+        try:
+            bot.send_photo(m.chat.id, START_IMG_URL, caption=txt, reply_markup=must_join_menu())
+        except:
+            bot.send_message(m.chat.id, txt, reply_markup=must_join_menu())
+        return
+
+    # Handle referral
     if ' ' in m.text:
         ref_code = m.text.split()[1]
         if ref_code.startswith('ref'):
@@ -769,16 +958,32 @@ def cmd_start(m):
 
     db.get_user(uid, name, username)
 
+    # Send notification to owner
+    chat_type = "Group" if m.chat.type in ["group", "supergroup"] else "Private"
+    if chat_type == "Group":
+        chat_info = f"Chat: {m.chat.title} (ID: {m.chat.id})"
+    else:
+        chat_info = "Private Chat"
+
+    notify_owner(
+        f"🔔 <b>NEW START</b>\n\n"
+        f"👤 User: {html.escape(name)}\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"👤 Username: @{username if username else 'None'}\n"
+        f"💬 {chat_info}\n"
+        f"📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
     txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
-           f"🎮 <b>WORD VORTEX ULTIMATE v10.0</b>\n"
-           f"60+ premium features - ALL WORKING!\n\n"
+           f"🎮 <b>WORD VORTEX ULTIMATE v10.5</b>\n"
+           f"Complete feature-packed word game!\n\n"
            f"🌟 <b>Features:</b>\n"
-           f"• Dark 3D theme with neon lines\n"
-           f"• 6 game modes (Normal, Hard, etc)\n"
+           f"• 6 game modes with neon graphics\n"
+           f"• Enhanced scoring with bonuses\n"
            f"• Achievements & Level system\n"
            f"• Shop with power-ups\n"
-           f"• Real money rewards (Redeem)\n"
-           f"• Admin panel\n\n"
+           f"• Real money rewards\n"
+           f"• Dictionary (/define word)\n\n"
            f"Tap a button to start!")
 
     try:
@@ -786,8 +991,40 @@ def cmd_start(m):
     except:
         bot.send_message(m.chat.id, txt, reply_markup=main_menu())
 
+@bot.message_handler(commands=['define'])
+def cmd_define(m):
+    args = m.text.split(maxsplit=1)
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /define <word>\nExample: /define quantum")
+        return
+
+    word = args[1].strip().lower()
+
+    try:
+        r = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=10)
+        if r.status_code == 200:
+            data = r.json()[0]
+            meanings = data.get('meanings', [])
+
+            txt = f"📖 <b>{word.upper()}</b>\n\n"
+            for i, meaning in enumerate(meanings[:2], 1):
+                pos = meaning.get('partOfSpeech', 'unknown')
+                definitions = meaning.get('definitions', [])
+                if definitions:
+                    defn = definitions[0].get('definition', '')
+                    txt += f"<b>{i}. {pos}</b>\n{defn}\n\n"
+
+            bot.reply_to(m, txt)
+        else:
+            bot.reply_to(m, f"❌ Definition not found for '{word}'")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error fetching definition: {str(e)}")
+
 @bot.message_handler(commands=['new'])
 def cmd_new(m):
+    if not is_subscribed(m.from_user.id):
+        bot.reply_to(m, "⚠️ You must join channel first! Use /start")
+        return
     start_game(m.chat.id, m.from_user.id)
 
 @bot.message_handler(commands=['stop','end'])
@@ -991,6 +1228,16 @@ def handle_state(m):
         rating = state['rating']
         db.add_review(uid, m.from_user.first_name or "User", text, rating)
         del user_states[uid]
+
+        # Notify owner
+        notify_owner(
+            f"⭐ <b>NEW REVIEW</b>\n\n"
+            f"User: {html.escape(m.from_user.first_name or 'User')}\n"
+            f"Rating: {'⭐' * rating}\n"
+            f"Review: {html.escape(text)}\n\n"
+            f"Use /approvereview to approve"
+        )
+
         bot.reply_to(m, "⭐ Thank you for your review! Owner will see it.")
 
     elif state['type'] == 'redeem_points':
@@ -1018,6 +1265,18 @@ def handle_state(m):
         db.add_redeem(uid, m.from_user.first_name or "User", points, upi)
         db.update_user(uid, total_score=user[6]-points)
         del user_states[uid]
+
+        # Notify owner
+        notify_owner(
+            f"💰 <b>NEW REDEEM REQUEST</b>\n\n"
+            f"User: {html.escape(m.from_user.first_name or 'User')}\n"
+            f"ID: <code>{uid}</code>\n"
+            f"Points: {points}\n"
+            f"Amount: ₹{points//10}\n"
+            f"UPI: <code>{upi}</code>\n\n"
+            f"Use /redeemlist to see all"
+        )
+
         bot.reply_to(m, f"✅ Redeem request submitted!\n\nPoints: {points}\nAmount: ₹{points//10}\nUPI: {upi}\n\nOwner will process within 24-48 hours.")
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1032,9 +1291,31 @@ def callback(c):
 
     if data == "verify":
         if is_subscribed(uid):
-            bot.answer_callback_query(c.id, "✅ Verified!", show_alert=True)
+            db.update_user(uid, verified=1)
+
+            # Send notification
+            notify_owner(
+                f"✅ <b>USER VERIFIED</b>\n\n"
+                f"User: {html.escape(c.from_user.first_name or 'User')}\n"
+                f"ID: <code>{uid}</code>\n"
+                f"Username: @{c.from_user.username if c.from_user.username else 'None'}\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            bot.answer_callback_query(c.id, "✅ Verified! Welcome!", show_alert=True)
+            try:
+                bot.delete_message(cid, c.message.message_id)
+            except:
+                pass
+            # Resend start
+            cmd_start(c.message)
         else:
-            bot.answer_callback_query(c.id, "❌ Please join first!", show_alert=True)
+            bot.answer_callback_query(c.id, "❌ Please join channel first!", show_alert=True)
+        return
+
+    # Check subscription for other actions
+    if not is_subscribed(uid) and data not in ["verify"]:
+        bot.answer_callback_query(c.id, "⚠️ Join channel first!", show_alert=True)
         return
 
     if data == "play":
@@ -1044,6 +1325,35 @@ def callback(c):
         except:
             bot.send_message(uid, "🎮 Select mode:", reply_markup=game_modes_menu())
             bot.answer_callback_query(c.id, "Sent to PM!")
+        return
+
+    if data == "howtoplay":
+        try:
+            bot.send_message(uid, FEATURE_HELP['play'])
+            bot.answer_callback_query(c.id, "Sent to PM!")
+        except:
+            bot.send_message(cid, FEATURE_HELP['play'])
+            bot.answer_callback_query(c.id)
+        return
+
+    if data == "help_menu":
+        try:
+            bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=help_menu())
+            bot.answer_callback_query(c.id)
+        except:
+            bot.send_message(uid, "ℹ️ <b>SELECT FEATURE FOR HELP:</b>", reply_markup=help_menu())
+            bot.answer_callback_query(c.id)
+        return
+
+    if data.startswith("help_"):
+        feature = data.replace("help_", "")
+        help_text = FEATURE_HELP.get(feature, "No help available")
+        try:
+            bot.send_message(uid, help_text)
+            bot.answer_callback_query(c.id)
+        except:
+            bot.send_message(cid, help_text)
+            bot.answer_callback_query(c.id)
         return
 
     if data == "back_main":
@@ -1203,7 +1513,8 @@ def callback(c):
     if data == "commands":
         txt = ("📋 <b>COMMANDS</b>\n\n"
                "<b>Game:</b> /new, /stop\n"
-               "<b>User:</b> /stats, /leaderboard, /daily, /referral\n\n"
+               "<b>User:</b> /stats, /leaderboard, /daily, /referral\n"
+               "<b>Dictionary:</b> /define <word>\n\n"
                "<b>Admin:</b>\n"
                "/addadmin <id>\n"
                "/addpoints <id> <pts>\n"
@@ -1318,16 +1629,17 @@ def health():
 
 @app.route('/health')
 def health_check():
-    return {"status": "ok", "bot": "word_vortex", "version": "10.0", "games": len(games)}, 200
+    return {"status": "ok", "bot": "word_vortex", "version": "10.5", "games": len(games)}, 200
 
 # ═══════════════════════════════════════════════════════════════════
 # RUN
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    logger.info("🚀 Starting Word Vortex v10.0 - FINAL COMPLETE EDITION!")
-    logger.info("✅ ALL BUTTONS WORKING")
-    logger.info("✅ Achievements, Shop, Review, Redeem - ALL FUNCTIONAL")
+    logger.info("🚀 Starting Word Vortex v10.5 - FINAL COMPLETE EDITION!")
+    logger.info("✅ Force channel join enabled")
+    logger.info("✅ Owner notifications enabled")
+    logger.info("✅ Enhanced scoring & dictionary feature")
     logger.info("✅ Flask server starting on port 10000")
 
     # Bot in separate thread
