@@ -22,7 +22,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 # ═══════════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "8208557623:AAEVkD1cCTUnbSu4x4Xf2AMcqJrErsz53zo")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "8208557623:AAHMVlODlQMpaoQ-PRFzVXOue-ousiWhu_Y")
 if not TOKEN:
     print("❌ TELEGRAM_TOKEN not set")
     sys.exit(1)
