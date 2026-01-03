@@ -29,7 +29,7 @@ if not TOKEN:
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
 NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
@@ -488,6 +488,24 @@ class ImageRenderer:
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
 
+    # Draw lines for found words
+    if found and placements:
+        for word in found:
+            if word in placements and placements[word]:
+                coords = placements[word]
+                if len(coords) >= 2:
+                    start = coords[0]
+                    end = coords[-1]
+                    x1 = pad + start[1]*cell + cell//2
+                    y1 = header + pad + start[0]*cell + cell//2
+                    x2 = pad + end[1]*cell + cell//2
+                    y2 = header + pad + end[0]*cell + cell//2
+                    draw.line([(x1,y1),(x2,y2)], fill='#ffffff', width=8)
+                    draw.line([(x1,y1),(x2,y2)], fill='#ff4757', width=5)
+                    r = 6
+                    draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill='#ff4757')
+                    draw.ellipse([x2-r,y2-r,x2+r,y2+r], fill='#ff4757')
+
         bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
         bio.seek(0)
@@ -710,49 +728,29 @@ def handle_guess(msg):
         pts += COMBO_BONUS
         bonuses.append(f"🔥COMBO x{session.combo_count[uid]}")
 
-        session.players[uid] = session.players.get(uid, 0) + pts
+    session.players[uid] = session.players.get(uid, 0) + pts
     db.add_score(uid, pts)
     db.add_xp(uid, pts * 10)
-    
+
     user = db.get_user(uid)
     db.update_user(uid, words_found=user[17]+1)
-    
+
     if user[5] == 0 and len(session.found) == len(session.words):
         if db.add_achievement(uid, "first_win"):
-            try:
-                bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
-            except:
-                pass
-    
+            bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
+
     bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
     bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
-    
-    update_game(cid)
-    
-    if len(session.found) == len(session.words):
-        time.sleep(0.5)
-        
-        try:
-            bot.delete_message(cid, session.message_id)
-        except:
-            pass
-        
-        winner_text = "No players scored"
-        if session.players:
-            winner = max(session.players.items(), key=lambda x: x[1])
-            winner_user = db.get_user(winner[0])
-            db.update_user(winner[0], wins=winner_user[5]+1)
-            winner_text = f"🏆 Winner: {html.escape(winner_user[1])}\n💯 Score: {winner[1]} pts"
-        
-        bot.send_message(cid, 
-            f"🎊 <b>GAME COMPLETE!</b> 🎊\n\n"
-            f"✅ All words found!\n\n"
-            f"{winner_text}\n\n"
-            f"🎮 Play again: /new")
-        
-        del games[cid]
-        return
 
+    update_game(cid)
+
+    if len(session.found) == len(session.words):
+        winner = max(session.players.items(), key=lambda x: x[1])
+        winner_user = db.get_user(winner[0])
+        db.update_user(winner[0], wins=winner_user[5]+1)
+
+        bot.send_message(cid, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts")
+        del games[cid]
 
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
@@ -1637,6 +1635,13 @@ def callback(c):
         if not hidden:
             bot.answer_callback_query(c.id, "All found!", show_alert=True)
             return
+        # Check balance first
+        user = db.get_user(uid)
+        if user[6] < HINT_COST:
+            bot.answer_callback_query(c.id, f'❌ Need {HINT_COST} pts!', show_alert=True)
+            return
+        # Deduct points
+        db.update_user(uid, points=user[6]-HINT_COST)
         reveal = random.choice(hidden)
         db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
