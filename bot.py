@@ -415,14 +415,20 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
+        # PREMIUM PATTERN BACKGROUND
         img = Image.new("RGB", (w, h), "#0a0e27")
         draw = ImageDraw.Draw(img)
+        
+        # Grid pattern
         for x in range(0, w, 40):
             draw.line([(x, 0), (x, h)], fill=(30, 40, 60), width=1)
         for y in range(0, h, 40):
             draw.line([(0, y), (w, y)], fill=(30, 40, 60), width=1)
+        
+        # Diagonal lines
         for i_line in range(-h, w, 80):
             draw.line([(i_line, 0), (i_line+h, h)], fill=(20, 30, 50), width=1)
+        
 
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -494,6 +500,25 @@ class ImageRenderer:
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
 
+        
+        # Draw THIN lines on found words
+        if found and placements:
+            for word in found:
+                if word in placements and placements[word]:
+                    coords = placements[word]
+                    if len(coords) >= 2:
+                        start, end = coords[0], coords[-1]
+                        x1 = pad + start[1]*cell + cell//2
+                        y1 = gridy + start[0]*cell + cell//2
+                        x2 = pad + end[1]*cell + cell//2
+                        y2 = gridy + end[0]*cell + cell//2
+                        # Thin yellow line
+                        draw.line([(x1,y1),(x2,y2)], fill="#FFEB3B", width=2)
+                        # Small endpoint circles
+                        r = 4
+                        draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill="#FFEB3B")
+                        draw.ellipse([x2-r,y2-r,x2+r,y2+r], fill="#FFEB3B")
+        
         bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
         bio.seek(0)
@@ -837,7 +862,7 @@ def cmd_start(m):
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
     uid = m.from_user.id
-    
+
 
     if not is_subscribed(uid):
         txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
@@ -1297,7 +1322,7 @@ def callback(c):
     cid = c.message.chat.id
     uid = c.from_user.id
     data = c.data
-    
+
 
     # VERIFY - FIXED NO LOOP
     if data == "verify":
@@ -1614,31 +1639,29 @@ def callback(c):
         if cid not in games:
             bot.answer_callback_query(c.id, "No game!", show_alert=True)
             return
-        user = db.get_user(uid)
-
-        # PREMIUM: Hints 50% cheaper!
-        cost = 25 if db.is_premium(uid) else HINT_COST
-
-        if user[7] < cost:
-            bot.answer_callback_query(c.id, f"Need {cost} pts!", show_alert=True)
-            return
+        
         game = games[cid]
-        hidden = [w for w in game.words if w not in game.found]
-        if not hidden:
-            bot.answer_callback_query(c.id, "All found!", show_alert=True)
-            return
         user = db.get_user(uid)
         cost = 25 if db.is_premium(uid) else HINT_COST
+        
+        # Check balance
         if user[7] < cost:
             bot.answer_callback_query(c.id, f"❌ Need {cost} pts!", show_alert=True)
             return
+        
+        # Get hidden words
+        hidden = [w for w in game.words if w not in game.found]
+        if not hidden:
+            bot.answer_callback_query(c.id, "✅ All found!", show_alert=True)
+            return
+        
+        # Deduct points and reveal
         db.update_user(uid, hintbalance=user[7]-cost)
         reveal = random.choice(hidden)
-        db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
         bot.answer_callback_query(c.id)
         return
-
+        
     if data == "g_score":
         if cid not in games:
             bot.answer_callback_query(c.id, "No game!", show_alert=True)
