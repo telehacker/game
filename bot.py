@@ -710,7 +710,7 @@ def handle_guess(msg):
         pts += COMBO_BONUS
         bonuses.append(f"🔥COMBO x{session.combo_count[uid]}")
 
-       session.players[uid] = session.players.get(uid, 0) + pts
+        session.players[uid] = session.players.get(uid, 0) + pts
     db.add_score(uid, pts)
     db.add_xp(uid, pts * 10)
     
@@ -752,6 +752,7 @@ def handle_guess(msg):
         
         del games[cid]
         return
+
 
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
