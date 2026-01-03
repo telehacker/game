@@ -415,21 +415,14 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-                # PREMIUM PATTERN BACKGROUND
-        img = Image.new('RGB', (w, h), '#0a0e27')
+        img = Image.new("RGB", (w, h), "#0a0e27")
         draw = ImageDraw.Draw(img)
-
-        # Grid pattern overlay
         for x in range(0, w, 40):
             draw.line([(x, 0), (x, h)], fill=(30, 40, 60), width=1)
         for y in range(0, h, 40):
             draw.line([(0, y), (w, y)], fill=(30, 40, 60), width=1)
-
-        # Diagonal lines for depth
         for i_line in range(-h, w, 80):
             draw.line([(i_line, 0), (i_line+h, h)], fill=(20, 30, 50), width=1)
-
-        draw = ImageDraw.Draw(img)
 
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -490,35 +483,16 @@ class ImageRenderer:
                     x2 = pad + b[1]*cell + cell//2
                     y2 = grid_y + b[0]*cell + cell//2
 
-                    draw.line([(x1,y1), (x2,y2)], fill="#00FFFF", width=3)
-                    draw.line([(x1,y1), (x2,y2)], fill="#00FFFF", width=1)
+                    draw.line([(x1,y1), (x2,y2)], fill="#ffff99", width=3)
+                    draw.line([(x1,y1), (x2,y2)], fill="#ffeb3b", width=1)
 
                     for px, py in [(x1,y1), (x2,y2)]:
-                        draw.ellipse([px-4, py-4, px+4, py+4], fill="#00FFFF")
+                        draw.ellipse([px-4, py-4, px+4, py+4], fill="#ffeb3b")
 
         # Footer
         draw.rectangle([0, h-footer, w, h], fill="#0d1929")
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
-                 fill="#7f8c8d", font=small_font)        
-        # Draw cyan neon lines on found words
-        if found and placements:
-            for word in found:
-                if word in placements and placements[word]:
-                    coords = placements[word]
-                    if len(coords) >= 2:
-                        start, end = coords[0], coords[-1]
-                        x1 = pad + start[1]*cell + cell//2
-                        y1 = gridy + start[0]*cell + cell//2
-                        x2 = pad + end[1]*cell + cell//2
-                        y2 = gridy + end[0]*cell + cell//2
-                        # White shadow + cyan line
-                        draw.line([(x1,y1),(x2,y2)], fill='#FFFFFF', width=8)
-                        draw.line([(x1,y1),(x2,y2)], fill='#00FFFF', width=5)
-                        r = 6
-                        draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill='#00FFFF')
-                        draw.ellipse([x2-r,y2-r,x2+r,y2+r], fill='#00FFFF')
-
-
+                 fill="#7f8c8d", font=small_font)
 
         bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
@@ -779,11 +753,8 @@ def is_subscribed(uid):
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, uid)
         return member.status in ['creator', 'administrator', 'member']
-    except Exception as e:
-        if 'user not found' in str(e).lower() or 'chat not found' in str(e).lower():
-            return True
+    except:
         return True
-
 
 def must_join_menu():
     kb = InlineKeyboardMarkup()
@@ -866,6 +837,7 @@ def cmd_start(m):
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
     uid = m.from_user.id
+    
 
     if not is_subscribed(uid):
         txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
@@ -1325,7 +1297,9 @@ def callback(c):
     cid = c.message.chat.id
     uid = c.from_user.id
     data = c.data
-# VERIFY - FIXED NO LOOP
+    
+
+    # VERIFY - FIXED NO LOOP
     if data == "verify":
         if is_subscribed(uid):
             db.update_user(uid, verified=1)
@@ -1652,15 +1626,13 @@ def callback(c):
         hidden = [w for w in game.words if w not in game.found]
         if not hidden:
             bot.answer_callback_query(c.id, "All found!", show_alert=True)
-            return        # Check balance and deduct points
+            return
         user = db.get_user(uid)
         cost = 25 if db.is_premium(uid) else HINT_COST
         if user[7] < cost:
-            bot.answer_callback_query(c.id, f'❌ Need {cost} pts!', show_alert=True)
+            bot.answer_callback_query(c.id, f"❌ Need {cost} pts!", show_alert=True)
             return
-
         db.update_user(uid, hintbalance=user[7]-cost)
-        
         reveal = random.choice(hidden)
         db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
