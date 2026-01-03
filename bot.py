@@ -721,10 +721,10 @@ def handle_guess(msg):
         if db.add_achievement(uid, "first_win"):
             bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
 
-    bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
+       bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
     bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
-
-       update_game(cid)
+    
+    update_game(cid)
     
     if len(session.found) == len(session.words):
         time.sleep(0.5)
@@ -749,6 +749,7 @@ def handle_guess(msg):
         
         del games[cid]
         return
+
 
 
 # ═══════════════════════════════════════════════════════════════════
