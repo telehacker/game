@@ -431,12 +431,23 @@ restore_sessions_on_startup()
 
 # Periodically persist sessions to disk
 def periodic_persist():
+    """
+    Periodically persist active sessions to disk.
+    This version waits for the 'games' and 'team_games' globals to be present
+    so it won't crash if the thread starts before those variables are defined.
+    """
     while True:
         try:
+            # wait until games/team_games exist in globals
+            if 'games' not in globals() or 'team_games' not in globals():
+                time.sleep(1)
+                continue
             persist_all_sessions()
         except Exception:
             logger.exception("Error persisting sessions")
         time.sleep(30)
+
+# Start background persist thread (start it once, after the function is defined)
 persist_thread = threading.Thread(target=periodic_persist, daemon=True)
 persist_thread.start()
 
