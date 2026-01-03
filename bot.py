@@ -955,7 +955,6 @@ def fallback(m):
     if m.text and m.text.startswith('/'):
         return
 # Line 957 end
-return
 
 # ↓↓↓ YE NAYE LINES ADD KARO (line 958 se pehle) ↓↓↓
 # Flask Health Check
