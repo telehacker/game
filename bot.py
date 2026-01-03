@@ -710,18 +710,21 @@ def handle_guess(msg):
         pts += COMBO_BONUS
         bonuses.append(f"🔥COMBO x{session.combo_count[uid]}")
 
-    session.players[uid] = session.players.get(uid, 0) + pts
+       session.players[uid] = session.players.get(uid, 0) + pts
     db.add_score(uid, pts)
     db.add_xp(uid, pts * 10)
-
+    
     user = db.get_user(uid)
     db.update_user(uid, words_found=user[17]+1)
-
+    
     if user[5] == 0 and len(session.found) == len(session.words):
         if db.add_achievement(uid, "first_win"):
-            bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
-
-       bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
+            try:
+                bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
+            except:
+                pass
+    
+    bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
     bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
     
     update_game(cid)
@@ -749,8 +752,6 @@ def handle_guess(msg):
         
         del games[cid]
         return
-
-
 
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
