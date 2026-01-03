@@ -29,7 +29,7 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID  # Group for notifications
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "1003682940543")) or OWNER_ID  # Group for notifications
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
 FORCE_JOIN = True  # Always force join
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
