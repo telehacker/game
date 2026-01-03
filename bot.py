@@ -29,7 +29,7 @@ if not TOKEN:
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
 NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
