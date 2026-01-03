@@ -1,36 +1,20 @@
 #!/usr/bin/env python3
 """
-WORD VORTEX - ULTIMATE PREMIUM EDITION
-Version: 6.1 - Full-feature consolidation (persistence, animated 3D-like GIF grid, many game modes)
-Language: Hinglish/English mixed replies by default (can be changed)
-
-NOTES BEFORE RUN:
-- Requires Python 3.8+
-- Required packages: pyTelegramBotAPI (telebot), Pillow, requests
-  Install: pip install pyTelegramBotAPI pillow requests
+WORD VORTEX - COMPLETE BOT
+Version: 1.0
+- Full consolidated implementation (games, animated GIF grid, menus, commands, reviews, persistence).
+- Requirements: Python 3.8+, packages: pyTelegramBotAPI, pillow, requests
+    pip install pyTelegramBotAPI pillow requests
 - Set environment variables:
-  - TELEGRAM_TOKEN (your bot token)
-  - OWNER_ID (your Telegram user id; notifications will go here)
-- This file persists sessions to a JSON file sessions_store.json and to SQLite for other things.
-- GIF animation is generated using Pillow frames. Optimized to small frame counts to keep size reasonable.
+    TELEGRAM_TOKEN    - bot token
+    OWNER_ID          - your Telegram user id (notifications)
+- Run: python bot.py
 
-WARNING:
-- Animated GIFs can be large for very large grids. Default sizes are tuned to limit size.
-- Persisted sessions resume after restart but the bot re-sends the current game state (image/caption),
-  message ids cannot be reused after restart so the bot posts a new message when restoring.
-
-USAGE QUICK:
-- /start - main menu (Commands button opens PM; fallback to /cmd)
-- /cmd - fallback: prints full commands
-- /cmdinfo <command> - detailed help
-- Game commands: /new, /new_hard, /new_physics, /new_chemistry, /new_math, /new_jee,
-  /new_anagram, /new_speedrun, /new_definehunt, /new_survival, /new_team, /daily, /new_phrase
-- In-game: press inline buttons or use /hint, /endgame
-- Reviews: /review <text>, /myreviews, owner: /publishreview <id>, /publishedreviews
-- Admin/Owner: /addpoints, /broadcast, /addadmin, /deladmin, /admins, /reset_leaderboard, /restart
-
-This file aims to be a complete, working implementation. If anything breaks in your environment,
-paste the traceback and I will fix quickly.
+Notes:
+- The grid animation is generated as a GIF (Pillow). If the host blocks large files or GIF fails,
+  the bot falls back to static images.
+- Sessions are persisted to sessions_store.json; on restart sessions are restored (best-effort).
+- If anything fails, check logs printed to stdout / container logs and paste tracebacks here.
 """
 
 import os
@@ -45,14 +29,17 @@ import logging
 import tempfile
 import threading
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import Dict, Any
 
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply, InputMediaAnimation
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 
-# ========== CONFIG ==========
+# ----------------------------
+# CONFIG
+# ----------------------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "8208557623:AAHZzgByv218uShEzAHBtGjpCJ8_cedldVk")
 try:
     OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197"))
@@ -65,22 +52,21 @@ SUPPORT_GROUP_LINK = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan"
 START_IMG_URL = os.environ.get("START_IMG_URL", "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg")
 
 if not TOKEN:
-    print("ERROR: TELEGRAM_TOKEN not set in environment")
+    print("ERROR: TELEGRAM_TOKEN env var is required.")
     sys.exit(1)
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("wordvortex")
+logger.setLevel(logging.DEBUG)
 
 # Gameplay constants
 FIRST_BLOOD_POINTS = 10
 NORMAL_POINTS = 2
 FINISHER_POINTS = 5
-BAD_WORDS = {
-    "SEX","PORN","NUDE","XXX","DICK","COCK","PUSSY","FUCK","SHIT","BITCH","ASS","HENTAI","BOOBS"
-}
-GAME_DURATION = 600  # default 10 minutes
+BAD_WORDS = {"SEX", "PORN", "NUDE", "XXX", "DICK", "COCK", "PUSSY", "FUCK", "SHIT", "BITCH", "ASS", "HENTAI", "BOOBS"}
+GAME_DURATION = 600  # seconds
 COOLDOWN = 2
 HINT_COST = 50
 
@@ -91,75 +77,68 @@ PLANS = [
     {"points": 800, "price_rs": 100},
 ]
 
-# Domain pools - these will be sampled randomly (not fixed words every time)
-PHYSICS_POOL = ["FORCE","ENERGY","MOMENTUM","VELOCITY","ACCELERATION","VECTOR","SCALAR","WAVE","PHOTON","GRAVITY",
-                "TORQUE","MOMENT","WORK","POWER","FREQUENCY","OSCILLATION","REFRACTION","DIFFRACTION","CHARGE","FIELD"]
+# Domain pools (sample; words selected randomly)
+PHYSICS_POOL = ["FORCE","ENERGY","MOMENTUM","VELOCITY","ACCEL","VECTOR","SCALAR","WAVE","PHOTON","GRAVITY",
+                "TORQUE","WORK","POWER","FREQUENCY","OSCILLATION","REFRACTION","FIELD","MOTION","INERTIA","PRESSURE"]
 CHEMISTRY_POOL = ["ATOM","MOLECULE","REACTION","BOND","ION","CATION","ANION","ACID","BASE","SALT",
                   "OXIDE","POLYMER","CATALYST","ELECTRON","COMPOUND","ELEMENT","MOLAR","PH","SPECTRUM","HALOGEN"]
-MATH_POOL = ["INTEGRAL","DERIVATIVE","MATRIX","VECTOR","ALGEBRA","GEOMETRY","CALCULUS","TRIGONOMETRY","EQUATION","FUNCTION",
-             "POLYNOMIAL","RATIO","PROBABILITY","STATISTICS","LOGARITHM","MODULO","SEQUENCE","SERIES","DIFFERENCE","LIMIT"]
+MATH_POOL = ["INTEGRAL","DERIVATIVE","MATRIX","VECTOR","ALGEBRA","GEOMETRY","CALCULUS","TRIG","EQUATION","FUNCTION",
+             "POLYNOMIAL","RATIO","PROBABILITY","STATISTICS","LOG","LIMIT","SEQUENCE","SERIES","AXIOM","THEOREM"]
 JEE_POOL = PHYSICS_POOL + CHEMISTRY_POOL + MATH_POOL
 
-# Where to persist session state
+# Persistence files
+DB_FILE = "wordvortex.db"
 SESSIONS_FILE = "sessions_store.json"
-DB_FILE = "wordsvortex.db"
 
-# ========== DATABASE MANAGER ==========
+# ----------------------------
+# DATABASE
+# ----------------------------
 class DB:
-    def __init__(self, fname=DB_FILE):
-        self.fname = fname
+    def __init__(self, path=DB_FILE):
+        self.path = path
         self._init_db()
 
     def _connect(self):
-        conn = sqlite3.connect(self.fname, check_same_thread=False)
+        conn = sqlite3.connect(self.path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self):
         conn = self._connect()
         c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT,
-                join_date TEXT,
-                games_played INTEGER DEFAULT 0,
-                wins INTEGER DEFAULT 0,
-                total_score INTEGER DEFAULT 0,
-                hint_balance INTEGER DEFAULT 100,
-                is_banned INTEGER DEFAULT 0
-            )
-        """)
-        c.execute("""CREATE TABLE IF NOT EXISTS admins (admin_id INTEGER PRIMARY KEY)""")
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS game_history (
-                game_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                winner_id INTEGER,
-                timestamp TEXT
-            )
-        """)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS reviews (
-                review_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                username TEXT,
-                review_text TEXT,
-                timestamp TEXT,
-                published INTEGER DEFAULT 0
-            )
-        """)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS daily_challenges (
-                challenge_date TEXT PRIMARY KEY,
-                words_json TEXT,
-                leaderboard_json TEXT DEFAULT '{}'
-            )
-        """)
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT,
+            join_date TEXT,
+            games_played INTEGER DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            total_score INTEGER DEFAULT 0,
+            hint_balance INTEGER DEFAULT 100,
+            is_banned INTEGER DEFAULT 0
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS admins (admin_id INTEGER PRIMARY KEY)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS game_history (
+            game_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            winner_id INTEGER,
+            timestamp TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS reviews (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            review_text TEXT,
+            timestamp TEXT,
+            published INTEGER DEFAULT 0
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS daily_challenges (
+            challenge_date TEXT PRIMARY KEY,
+            words_json TEXT,
+            leaderboard_json TEXT DEFAULT '{}'
+        )''')
         conn.commit()
         conn.close()
 
-    # user helpers
     def get_user(self, user_id, name="Player"):
         conn = self._connect()
         c = conn.cursor()
@@ -173,10 +152,6 @@ class DB:
             r = c.fetchone()
         conn.close()
         return r
-
-    def register_user(self, user_id, name="Player"):
-        u = self.get_user(user_id, name)
-        return u
 
     def update_stats(self, user_id, score_delta=0, hint_delta=0, win=False, games_played_delta=0):
         conn = self._connect()
@@ -192,7 +167,6 @@ class DB:
         conn.commit()
         conn.close()
 
-    # admin helpers
     def add_admin(self, admin_id):
         conn = self._connect()
         c = conn.cursor()
@@ -288,18 +262,17 @@ class DB:
         conn.commit()
         conn.close()
 
-    # daily challenges
+    # daily
     def get_or_create_daily(self):
         today = datetime.now().strftime("%Y-%m-%d")
         conn = self._connect()
         c = conn.cursor()
         c.execute("SELECT words_json FROM daily_challenges WHERE challenge_date=?", (today,))
-        row = c.fetchone()
-        if row:
-            words = json.loads(row["words_json"])
+        r = c.fetchone()
+        if r:
+            words = json.loads(r["words_json"])
             conn.close()
             return words, today
-        # create
         pool = ALL_WORDS[:] if len(ALL_WORDS) >= 8 else (ALL_WORDS * 2)
         words = random.sample(pool, min(8, len(pool)))
         c.execute("INSERT INTO daily_challenges (challenge_date, words_json, leaderboard_json) VALUES (?, ?, ?)",
@@ -312,8 +285,8 @@ class DB:
         conn = self._connect()
         c = conn.cursor()
         c.execute("SELECT leaderboard_json FROM daily_challenges WHERE challenge_date=?", (date,))
-        row = c.fetchone()
-        lb = json.loads(row["leaderboard_json"]) if row and row["leaderboard_json"] else {}
+        r = c.fetchone()
+        lb = json.loads(r["leaderboard_json"]) if r and r["leaderboard_json"] else {}
         key = str(user_id)
         if key not in lb:
             lb[key] = {"username": username, "points": 0}
@@ -326,384 +299,637 @@ class DB:
         conn = self._connect()
         c = conn.cursor()
         c.execute("SELECT leaderboard_json FROM daily_challenges WHERE challenge_date=?", (date,))
-        row = c.fetchone()
+        r = c.fetchone()
         conn.close()
-        if not row or not row["leaderboard_json"]:
+        if not r or not r["leaderboard_json"]:
             return []
-        lb = json.loads(row["leaderboard_json"])
+        lb = json.loads(r["leaderboard_json"])
         sorted_lb = sorted(lb.items(), key=lambda x: x[1]["points"], reverse=True)
         return [(v["username"], v["points"]) for k, v in sorted_lb[:10]]
 
 db = DB()
 
-# ========== SESSIONS PERSISTENCE ==========
+# ----------------------------
+# WORD LIST
+# ----------------------------
+ALL_WORDS = []
+def fetch_words():
+    global ALL_WORDS
+    try:
+        url = "https://www.mit.edu/~ecprice/wordlist.10000"
+        r = requests.get(url, timeout=8)
+        lines = r.text.splitlines()
+        ALL_WORDS = [w.upper() for w in lines if 4 <= len(w.strip()) <= 9 and w.isalpha() and w.upper() not in BAD_WORDS]
+        logger.info("Loaded external word list, count=%d", len(ALL_WORDS))
+    except Exception:
+        logger.exception("Failed to fetch words; using fallback list")
+        ALL_WORDS = ['PYTHON','JAVA','SCRIPT','ROBOT','SPACE','GALAXY','NEBULA','FUTURE','ENGINE','LOGIC']
+fetch_words()
+
+# ----------------------------
+# SESSIONS (in-memory, persisted)
+# ----------------------------
+games: Dict[int, Any] = {}          # chat_id -> session object
+team_games: Dict[int, Any] = {}     # chat_id -> team session (if used)
+
 SESSIONS_LOCK = threading.Lock()
 
-def load_sessions_from_file():
+def save_sessions():
+    try:
+        with SESSIONS_LOCK:
+            out = {}
+            for cid, s in games.items():
+                try:
+                    out[str(cid)] = {
+                        "mode": s.mode,
+                        "is_hard": getattr(s, "is_hard", False),
+                        "words": getattr(s, "words", []),
+                        "found": list(getattr(s, "found", [])),
+                        "placements": getattr(s, "placements", {}),
+                        "start_time": getattr(s, "start_time", time.time()),
+                        "duration": getattr(s, "duration", GAME_DURATION),
+                        "players_scores": getattr(s, "players_scores", {}),
+                    }
+                except Exception:
+                    logger.exception("serialize session failed for chat %s", cid)
+            for cid, s in team_games.items():
+                try:
+                    out[str(cid)] = {
+                        "mode": s.mode,
+                        "is_hard": getattr(s, "is_hard", False),
+                        "words": getattr(s, "words", []),
+                        "found": list(getattr(s, "found", [])),
+                        "placements": getattr(s, "placements", {}),
+                        "start_time": getattr(s, "start_time", time.time()),
+                        "duration": getattr(s, "duration", GAME_DURATION),
+                        "players_scores": getattr(s, "players_scores", {}),
+                        "team_a_ids": getattr(s, "team_a_ids", []),
+                        "team_b_ids": getattr(s, "team_b_ids", []),
+                    }
+                except Exception:
+                    logger.exception("serialize team session failed for chat %s", cid)
+            with open(SESSIONS_FILE + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(out, f)
+            os.replace(SESSIONS_FILE + ".tmp", SESSIONS_FILE)
+            logger.debug("Saved %d sessions", len(out))
+    except Exception:
+        logger.exception("Failed to save sessions")
+
+def load_sessions():
     if not os.path.exists(SESSIONS_FILE):
         return {}
     try:
         with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+            logger.info("Loaded sessions from disk: %d", len(data))
             return data
     except Exception:
         logger.exception("Failed to load sessions file")
         return {}
 
-def save_sessions_to_file(sessions_data):
-    try:
-        with SESSIONS_LOCK:
-            with open(SESSIONS_FILE + ".tmp", "w", encoding="utf-8") as f:
-                json.dump(sessions_data, f)
-            os.replace(SESSIONS_FILE + ".tmp", SESSIONS_FILE)
-    except Exception:
-        logger.exception("Failed to save sessions to file")
-
-# We'll store only serializable parts of sessions (words, placements, found, start_time, duration, is_hard, mode, players_scores)
-def serialize_session(chat_id, session):
-    return {
-        "chat_id": chat_id,
-        "is_hard": getattr(session, "is_hard", False),
-        "mode": getattr(session, "mode", "normal"),
-        "words": getattr(session, "words", []),
-        "found": list(getattr(session, "found", [])),
-        "placements": getattr(session, "placements", {}),
-        "start_time": getattr(session, "start_time", time.time()),
-        "duration": getattr(session, "duration", GAME_DURATION),
-        "players_scores": getattr(session, "players_scores", {}),
-    }
-
-def persist_all_sessions():
-    data = {}
-    with SESSIONS_LOCK:
-        for cid, sess in list(games.items()):
-            data[str(cid)] = serialize_session(cid, sess)
-        for cid, sess in list(team_games.items()):
-            data[str(cid)] = serialize_session(cid, sess)
-    save_sessions_to_file(data)
-
-def restore_sessions_on_startup():
-    data = load_sessions_from_file()
+def restore_sessions():
+    data = load_sessions()
     restored = 0
     for cid_str, info in data.items():
         try:
             cid = int(cid_str)
             mode = info.get("mode", "normal")
             is_hard = info.get("is_hard", False)
-            # rebuild session object based on mode
-            if mode == "anagram":
-                sess = AnagramSession(cid)
-            elif mode == "speedrun":
-                sess = SpeedrunSession(cid)
-            elif mode == "definehunt":
-                sess = DefinitionHuntSession(cid)
-            elif mode == "survival":
-                sess = SurvivalSession(cid)
-            elif mode == "team":
-                sess = TeamGameSession(cid)
-                team_games[cid] = sess
-                restored += 1
-                continue
-            elif mode == "daily":
-                words = info.get("words", [])
-                sess = DailyPuzzleSession(cid, words)
-            elif mode == "phrase":
-                sess = HiddenPhraseSession(cid)
-            else:
-                sess = GameSession(cid, is_hard=is_hard, duration=info.get("duration", GAME_DURATION), word_pool=None, mode=mode)
-            # populate found and players scores if present
-            sess.words = info.get("words", sess.words)
-            sess.found = set(info.get("found", []))
-            sess.placements = info.get("placements", sess.placements)
-            sess.start_time = info.get("start_time", time.time())
-            sess.duration = info.get("duration", GAME_DURATION)
-            sess.players_scores = info.get("players_scores", {})
-            # store
-            games[cid] = sess
+            # We'll restore as minimal GameSession-like objects to allow countdown and posting; a full restoration
+            # of running message_ids is not safe (message ids invalid after restart), so we re-send a new message on restore.
+            s = SimpleRestoredSession(cid, mode, is_hard, info)
+            games[cid] = s
             restored += 1
         except Exception:
-            logger.exception("Failed to restore session for chat %s", cid_str)
-    logger.info("Restored %d sessions from disk", restored)
+            logger.exception("Failed to restore session %s", cid_str)
+    logger.info("Restored %d sessions", restored)
     return restored
 
-# Call restore at startup
-restore_sessions_on_startup()
+# SimpleRestoredSession provides minimal interface used by code (generate_grid_animation expects attributes)
+class SimpleRestoredSession:
+    def __init__(self, chat_id, mode, is_hard, info):
+        self.chat_id = chat_id
+        self.mode = mode
+        self.is_hard = is_hard
+        self.words = info.get("words", [])
+        self.found = set(info.get("found", []))
+        self.placements = info.get("placements", {})
+        self.start_time = info.get("start_time", time.time())
+        self.duration = info.get("duration", GAME_DURATION)
+        self.players_scores = info.get("players_scores", {})
+        self.players_last_guess = {}
+        self.grid = self._reconstruct_grid()
+        self.message_id = None
+        self.active = True
+        self.timer_thread = None
 
-# Periodically persist sessions to disk
-def periodic_persist():
-    """
-    Periodically persist active sessions to disk.
-    This version waits for the 'games' and 'team_games' globals to be present
-    so it won't crash if the thread starts before those variables are defined.
-    """
+    def _reconstruct_grid(self):
+        # Build a simple grid containing words at approximate placements; if placements empty,
+        # fill random grid
+        size = 10 if self.is_hard else 8
+        grid = [[' ' for _ in range(size)] for _ in range(size)]
+        for w, coords in (self.placements or {}).items():
+            for i, (r, c) in enumerate(coords):
+                if 0 <= r < size and 0 <= c < size and i < len(w):
+                    grid[r][c] = w[i]
+        # fill blanks
+        for r in range(size):
+            for c in range(size):
+                if grid[r][c] == ' ':
+                    grid[r][c] = random.choice(string.ascii_uppercase)
+        return grid
+
+    def get_hint_text(self):
+        hints = []
+        for w in self.words:
+            if w in self.found:
+                hints.append(f"✅ <s>{w}</s>")
+            else:
+                masked = w[0] + "-"*(len(w)-1)
+                hints.append(f"<code>{masked}</code> ({len(w)})")
+        return "\n".join(hints)
+
+# start with restore
+restore_sessions()
+
+# persist thread (safe start after games defined)
+def periodic_persist_loop():
     while True:
         try:
-            # wait until games/team_games exist in globals
-            if 'games' not in globals() or 'team_games' not in globals():
-                time.sleep(1)
-                continue
-            persist_all_sessions()
+            save_sessions()
         except Exception:
-            logger.exception("Error persisting sessions")
-        time.sleep(30)
+            logger.exception("periodic_persist error")
+        time.sleep(25)
 
-# Start background persist thread (start it once, after the function is defined)
-persist_thread = threading.Thread(target=periodic_persist, daemon=True)
-persist_thread.start()
+_persist_thread = threading.Thread(target=periodic_persist_loop, daemon=True)
+_persist_thread.start()
 
-# ========== IMAGE ANIMATION: generate animated GIF with 3D-ish effect ==========
-def generate_grid_animation(grid, placements=None, found=None, is_hard=False, frames=8, size_limit=700):
-    """
-    Create an animated GIF (in-memory BytesIO) representing the grid with a subtle 3D rotation/light sweep.
-    - grid: 2D list of chars
-    - placements: dict word -> list of (r,c)
-    - found: set of words that should be drawn with a red line
-    Returns BytesIO with GIF content.
-    """
+# ----------------------------
+# IMAGE ANIMATION (GIF) GENERATOR
+# ----------------------------
+def generate_grid_animation(grid, placements=None, found=None, is_hard=False, frames=6, max_size=720):
+    """Generate an animated GIF (BytesIO) that simulates a subtle 3D/light sweep and draws found lines."""
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
-    # compute base image dimensions
-    cell = 50 if max(rows, cols) >= 10 else 60
-    width = cols * cell + 120
-    height = rows * cell + 200
-    # cap size to keep GIF small
+    # Basic sizing
+    cell = 60 if (rows <= 8 and cols <= 8) else 48
+    header_h = 90
+    padding = 20
+    width = cols * cell + padding*2
+    height = header_h + rows * cell + padding*2 + 40
+    # scale down if too large
     scale = 1.0
     max_dim = max(width, height)
-    if max_dim > size_limit:
-        scale = size_limit / max_dim
-        cell = int(cell * scale)
-        width = int(width * scale)
-        height = int(height * scale)
-    frames_images = []
+    if max_dim > max_size:
+        scale = max_size / max_dim
+        cell = max(20, int(cell * scale))
+        width = cols * cell + padding*2
+        height = header_h + rows * cell + padding*2 + 40
+
+    # fonts
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
-        font_char = ImageFont.truetype(font_path, int(cell * 0.6))
-        font_header = ImageFont.truetype(font_path, int(28 * scale))
+        letter_font = ImageFont.truetype(font_path, int(cell * 0.6))
+        header_font = ImageFont.truetype(font_path, 28)
+        small_font = ImageFont.truetype(font_path, 14)
     except Exception:
-        font_char = ImageFont.load_default()
-        font_header = ImageFont.load_default()
+        letter_font = ImageFont.load_default()
+        header_font = ImageFont.load_default()
+        small_font = ImageFont.load_default()
 
-    # create base for each frame with slight perspective and light sweep
+    frames_images = []
+
     for f in range(frames):
-        img = Image.new("RGB", (width, height), "#f8fafc")
+        img = Image.new("RGB", (width, height), "#ffffff")
         draw = ImageDraw.Draw(img)
         # header
+        draw.rectangle([0,0,width,header_h], fill="#eef6fb")
         title = "WORD VORTEX"
-        draw.rectangle([0, 0, width, 80], fill="#eef2f6")
-        tw, th = draw.textsize(title, font=font_header)
-        draw.text(((width - tw) / 2, 18), title, fill="#0b66c3", font=font_header)
-        # light sweep: a radial gradient moving across
-        sweep = Image.new("L", (width, height), 0)
-        sd = ImageDraw.Draw(sweep)
-        # moving center
-        cx = int(width * (0.2 + 0.6 * (f / max(1, frames - 1))))
-        cy = int(80 + height * 0.2)
-        maxr = max(width, height)
-        for r in range(0, maxr, 8):
-            alpha = max(0, 200 - int(200 * (r / maxr)))
-            sd.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=alpha)
-        sweep = sweep.filter(ImageFilter.GaussianBlur(radius=20))
-        # draw grid with a skew based on frame index
-        grid_start_x = 40
-        grid_start_y = 110
-        # slight rotation-like offset
-        offset = int(6 * (f / max(1, frames - 1))) - 3
+        tw, th = draw.textsize(title, font=header_font)
+        draw.text(((width-tw)/2, 18), title, fill="#0b66c3", font=header_font)
+        # grid origin
+        gx = padding
+        gy = header_h + padding
+        # light sweep center moving horizontally
+        cx = int(width * (0.15 + 0.7 * (f / max(1, frames - 1))))
+        cy = gy + int((rows*cell) * 0.25)
+        # draw cells with slight skew effect
         for r in range(rows):
             for c in range(cols):
-                x = grid_start_x + c * cell + int((r - rows/2) * (0.3 * offset))
-                y = grid_start_y + r * cell + int((c - cols/2) * (0.1 * offset))
-                rect = [x, y, x + cell - 2, y + cell - 2]
-                draw.rectangle(rect, outline="#2f80d7", width=2)
+                x = gx + c*cell
+                y = gy + r*cell
+                draw.rectangle([x, y, x+cell, y+cell], outline="#2f80d7", width=2)
                 ch = grid[r][c]
-                bw, bh = draw.textsize(ch, font=font_char)
-                draw.text((x + (cell - bw) / 2, y + (cell - bh) / 2 - 4), ch, fill="#1b2b3a", font=font_char)
-        # overlay sweep as light
-        light = Image.new("RGBA", img.size, (255, 255, 255, 0))
-        light_draw = ImageDraw.Draw(light)
-        # paste sweep as white with low opacity
-        light.putalpha(sweep)
-        img = Image.alpha_composite(img.convert("RGBA"), light).convert("RGB")
-
-        # draw found-word lines in this frame (if words found)
+                bw, bh = draw.textsize(ch, font=letter_font)
+                draw.text((x + (cell - bw)/2, y + (cell - bh)/2 - 2), ch, fill="#1b2b3a", font=letter_font)
+        # simulate light sweep: radial white gradient with low alpha
+        light = Image.new("L", (width, height), 0)
+        ld = ImageDraw.Draw(light)
+        maxr = max(width, height)
+        for rr in range(0, maxr, 20):
+            alpha = max(0, 150 - int(150 * rr / maxr))
+            ld.ellipse([cx-rr, cy-rr, cx+rr, cy+rr], fill=alpha)
+        light = light.filter(ImageFilter.GaussianBlur(radius=20))
+        overlay = Image.new("RGBA", (width, height), (255,255,255,0))
+        overlay.putalpha(light)
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        # draw found word lines
         if placements and found:
             for word, coords in placements.items():
                 if word in found and coords:
-                    first = coords[0]
-                    last = coords[-1]
-                    x1 = grid_start_x + first[1] * cell + cell // 2 + int((first[0] - rows/2) * (0.3 * offset))
-                    y1 = grid_start_y + first[0] * cell + cell // 2 + int((first[1] - cols/2) * (0.1 * offset))
-                    x2 = grid_start_x + last[1] * cell + cell // 2 + int((last[0] - rows/2) * (0.3 * offset))
-                    y2 = grid_start_y + last[0] * cell + cell // 2 + int((last[1] - cols/2) * (0.1 * offset))
-                    draw.line([(x1, y1), (x2, y2)], fill="#ff4757", width=6)
-                    draw.ellipse([x1 - 6, y1 - 6, x1 + 6, y1 + 6], fill="#ff4757")
-                    draw.ellipse([x2 - 6, y2 - 6, x2 + 6, y2 + 6], fill="#ff4757")
+                    first = coords[0]; last = coords[-1]
+                    x1 = gx + first[1]*cell + cell//2
+                    y1 = gy + first[0]*cell + cell//2
+                    x2 = gx + last[1]*cell + cell//2
+                    y2 = gy + last[0]*cell + cell//2
+                    draw.line([(x1,y1),(x2,y2)], fill="#ff4757", width=6)
+                    r_rad = max(4, cell//10)
+                    draw.ellipse([x1-r_rad, y1-r_rad, x1+r_rad, y1+r_rad], fill="#ff4757")
+                    draw.ellipse([x2-r_rad, y2-r_rad, x2+r_rad, y2+r_rad], fill="#ff4757")
         frames_images.append(img.convert("P", palette=Image.ADAPTIVE))
 
-    # save frames to BytesIO as GIF
     bio = io.BytesIO()
     try:
-        frames_images[0].save(
-            bio,
-            format="GIF",
-            save_all=True,
-            append_images=frames_images[1:],
-            duration=120,
-            loop=0,
-            optimize=True,
-        )
+        frames_images[0].save(bio, format="GIF", save_all=True, append_images=frames_images[1:], duration=120, loop=0, optimize=True)
     except Exception:
-        # fallback: save single frame JPEG
+        # fallback static JPEG
         bio = io.BytesIO()
         frames_images[0].convert("RGB").save(bio, format="JPEG", quality=90)
     bio.seek(0)
     return bio
 
-# ========== MENU / BUTTON ANIMATION ==========
-MENU_ANIMATION_FRAMES = ["🔵", "🔶", "🔷", "🔸"]
-MENU_ANIMATION_INTERVAL = 1.5  # seconds (edit frequency)
-ANIMATING_MENUS = {}  # message_id -> (chat_id, cur_index, stop_event)
+# ----------------------------
+# GRID RENDER & SESSION CLASSES
+# ----------------------------
+class GameSession:
+    def __init__(self, chat_id:int, is_hard:bool=False, duration:int=GAME_DURATION, word_pool=None, mode:str="normal"):
+        self.chat_id = chat_id
+        self.is_hard = is_hard
+        self.mode = mode
+        self.size = 10 if is_hard else 8
+        self.word_count = 8 if is_hard else 6
+        self.duration = duration
+        self.start_time = time.time()
+        self.last_activity = time.time()
+        self.words = []
+        self.found = set()
+        self.grid = []
+        self.placements = {}
+        self.players_scores = {}
+        self.players_last_guess = {}
+        self.message_id = None
+        self.active = True
+        self.word_pool = word_pool
+        self.timer_thread = None
+        self.generate()
 
-def start_menu_animation(chat_id, message_id, button_index=0):
-    """
-    Simulate an animated emoji inside one of the inline buttons by periodically editing reply_markup.
-    button_index: index of the button in reply_markup.buttons sequence we want to animate (approx)
-    """
-    stop_event = threading.Event()
-    ANIMATING_MENUS[message_id] = (chat_id, 0, stop_event, button_index)
-    def runner():
+    def generate(self):
+        pool = []
+        if self.word_pool:
+            pool = [w.upper() for w in self.word_pool if 4 <= len(w) <= 12]
+        else:
+            pool = ALL_WORDS[:] if len(ALL_WORDS) >= self.word_count else (ALL_WORDS * 2)
         try:
-            while not stop_event.is_set():
-                try:
-                    chat, idx, ev, bidx = ANIMATING_MENUS.get(message_id, (None, 0, stop_event, button_index))
-                    # fetch message (can't fetch message's markup easily), so we remember last markup somewhere
-                    # For safety, we simply send a tiny edit message next to menu: edit caption to append frame emoji (non-destructive)
-                    # But editing caption repeatedly can be heavy; instead we avoid heavy edits: we will edit via a short "status message" under the menu
-                    # Simpler approach: send ephemeral small edit to the menu message caption by appending a dot + emoji then revert (lightweight)
-                    # Retrieve message (we don't have stored original caption here), so to avoid complexity, skip editing caption and instead send a small "typing" action emote
-                    # Practical approach: if the menu message id exists, we try to edit its reply_markup to change the text of a button - but telebot doesn't provide reading current reply_markup
-                    # So we'll simply send a small sticker-like ephemeral message to chat as animation frame (but to avoid spam we won't). To be safe, we won't perform aggressive edits.
-                    # We'll emulate animation by toggling a short live message per chat (one per menu) — keep a single temporary message id per menu and edit it.
-                    tmp_msg_id = None
-                    # We store a special temp message per menu in ANIMATING_MENUS entry if needed, but to keep code safe and avoid complex state, we'll do simple sleep and advance index.
-                    ANIMATING_MENUS[message_id] = (chat_id, (idx + 1) % len(MENU_ANIMATION_FRAMES), ev, bidx)
-                except Exception:
-                    logger.exception("menu animation loop error")
-                time.sleep(MENU_ANIMATION_INTERVAL)
+            self.words = random.sample(pool, self.word_count)
         except Exception:
-            logger.exception("menu animation runner error")
-    t = threading.Thread(target=runner, daemon=True)
-    t.start()
+            self.words = [random.choice(pool) for _ in range(self.word_count)]
+        # build empty grid and place words
+        self.grid = [[' ' for _ in range(self.size)] for _ in range(self.size)]
+        dirs = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+        sorted_words = sorted(self.words, key=len, reverse=True)
+        self.placements = {}
+        for word in sorted_words:
+            placed = False
+            attempts = 0
+            while not placed and attempts < 400:
+                attempts += 1
+                r = random.randint(0, self.size-1)
+                c = random.randint(0, self.size-1)
+                dr, dc = random.choice(dirs)
+                if self._can_place(r,c,dr,dc,word):
+                    coords = []
+                    for i, ch in enumerate(word):
+                        rr, cc = r + i*dr, c + i*dc
+                        self.grid[rr][cc] = ch
+                        coords.append((rr, cc))
+                    self.placements[word] = coords
+                    placed = True
+            if not placed:
+                # fallback scanning placement
+                for rr in range(self.size):
+                    for cc in range(self.size):
+                        for dr, dc in dirs:
+                            if self._can_place(rr, cc, dr, dc, word):
+                                coords = []
+                                for i, ch in enumerate(word):
+                                    rrr, ccc = rr + i*dr, cc + i*dc
+                                    self.grid[rrr][ccc] = ch
+                                    coords.append((rrr, ccc))
+                                self.placements[word] = coords
+                                placed = True
+                                break
+                        if placed:
+                            break
+                    if placed:
+                        break
+        # fill blanks
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.grid[r][c] == ' ':
+                    self.grid[r][c] = random.choice(string.ascii_uppercase)
 
-def stop_menu_animation(message_id):
-    entry = ANIMATING_MENUS.get(message_id)
-    if entry:
-        _, _, ev, _ = entry
-        if ev and hasattr(ev, "set"):
-            ev.set()
-        ANIMATING_MENUS.pop(message_id, None)
+    def _can_place(self, r,c,dr,dc,word):
+        for i in range(len(word)):
+            rr, cc = r + i*dr, c + i*dc
+            if not (0 <= rr < self.size and 0 <= cc < self.size):
+                return False
+            if self.grid[rr][cc] != ' ' and self.grid[rr][cc] != word[i]:
+                return False
+        return True
 
-# ========== SAFE SEND helpers ==========
-def send_to_pm_or_group(user_id, chat_id, text, reply_markup=None):
-    """
-    Attempts to send 'text' to user's PM; if fails, sends to chat_id (group) and informs user.
-    Returns True if sent to PM, False if group fallback or failed.
-    """
+    def get_hint_text(self):
+        hints = []
+        for w in self.words:
+            if w in self.found:
+                hints.append(f"✅ <s>{w}</s>")
+            else:
+                masked = w[0] + "-"*(len(w)-1)
+                hints.append(f"<code>{masked}</code> ({len(w)})")
+        return "\n".join(hints)
+
+    def start_timer(self):
+        if self.timer_thread and self.timer_thread.is_alive():
+            return
+        self.timer_thread = threading.Thread(target=self._timer_loop, daemon=True)
+        self.timer_thread.start()
+
+    def _timer_loop(self):
+        try:
+            while self.active:
+                elapsed = time.time() - self.start_time
+                remaining = int(self.duration - elapsed)
+                if remaining <= 0:
+                    try:
+                        bot.send_message(self.chat_id, "⏰ Time's up! Game ended.")
+                    except Exception:
+                        pass
+                    end_game_session(self.chat_id, "timeout")
+                    break
+                # update caption every 10s
+                if self.message_id:
+                    mins = remaining // 60
+                    secs = remaining % 60
+                    caption = (f"🔥 <b>WORD VORTEX</b>\nMode: {'Hard' if self.is_hard else 'Normal'} | {self.mode}\n"
+                               f"⏱ Time Left: {mins}:{secs:02d}\n\n{self.get_hint_text()}")
+                    markup = InlineKeyboardMarkup()
+                    markup.add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess"))
+                    markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data="game_hint"),
+                               InlineKeyboardButton("📊 Score", callback_data="game_score"))
+                    try:
+                        safe_edit_caption(self.chat_id, self.message_id, caption, reply_markup=markup)
+                    except Exception:
+                        logger.exception("Failed to safe_edit_caption in timer loop")
+                time.sleep(10)
+        except Exception:
+            logger.exception("Timer loop exception")
+        finally:
+            self.active = False
+
+# Minimal other session subclasses (Anagram/Speedrun/Definition/Survival/Team/Phrase/Daily)
+# For brevity these are thin wrappers that set mode and adapt generate; main guess logic handles 'mode' differences.
+class AnagramSession:
+    def __init__(self, chat_id, duration=300):
+        self.chat_id = chat_id
+        self.mode = "anagram"
+        self.is_hard = False
+        self.duration = duration
+        self.start_time = time.time()
+        self.words = []
+        self.scrambled = {}
+        self.found = set()
+        self.players_scores = {}
+        self.players_last_guess = {}
+        self.message_id = None
+        self.active = True
+        self.timer_thread = None
+        self.generate()
+
+    def generate(self):
+        pool = ALL_WORDS[:] if len(ALL_WORDS) >= 6 else (ALL_WORDS * 2)
+        self.words = random.sample(pool, min(6, len(pool)))
+        self.scrambled = {}
+        for w in self.words:
+            letters = list(w)
+            random.shuffle(letters)
+            self.scrambled[w] = ''.join(letters)
+
+    def get_hint_text(self):
+        lines = []
+        for w in self.words:
+            if w in self.found:
+                lines.append(f"✅ {w}")
+            else:
+                lines.append(f"🔤 {self.scrambled[w]}")
+        return "\n".join(lines)
+
+class SpeedrunSession(GameSession):
+    def __init__(self, chat_id):
+        super().__init__(chat_id, is_hard=False, duration=180, word_pool=None, mode="speedrun")
+        self.word_count = 12
+
+class DefinitionHuntSession(GameSession):
+    def __init__(self, chat_id):
+        super().__init__(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None, mode="definehunt")
+        self.definitions = {}
+        self._fetch_definitions()
+
+    def _fetch_definitions(self):
+        for w in self.words:
+            try:
+                r = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{w.lower()}", timeout=4)
+                d = r.json()
+                if isinstance(d, list) and d:
+                    meanings = d[0].get("meanings", [])
+                    defs = meanings[0].get("definitions", []) if meanings else []
+                    self.definitions[w] = defs[0].get("definition", "...") if defs else "..."
+                else:
+                    self.definitions[w] = "..."
+            except Exception:
+                self.definitions[w] = "..."
+    def get_hint_text(self):
+        hints = []
+        for w in self.words:
+            if w in self.found:
+                hints.append(f"✅ {w}")
+            else:
+                hints.append(f"📖 {self.definitions.get(w, '...')[:40]}...")
+        return "\n".join(hints)
+
+class SurvivalSession(GameSession):
+    def __init__(self, chat_id):
+        super().__init__(chat_id, is_hard=False, duration=300, word_pool=None, mode="survival")
+        self.round = 1
+
+class TeamGameSession(GameSession):
+    def __init__(self, chat_id):
+        super().__init__(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None, mode="team")
+        self.team_a_ids = []
+        self.team_b_ids = []
+        self.team_a_score = 0
+        self.team_b_score = 0
+
+class HiddenPhraseSession(GameSession):
+    def __init__(self, chat_id):
+        super().__init__(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None, mode="phrase")
+        # override words with a phrase set
+        phrases = [["WORD","SEARCH","PUZZLE"], ["BRAIN","GAME","FUN"], ["HARD","WORK","WIN"]]
+        phrase = random.choice(phrases)
+        self.words = phrase
+        self.grid = [[' ' for _ in range(self.size)] for _ in range(self.size)]
+        # place phrase words
+        self.placements = {}
+        dirs = [(0,1),(1,0),(1,1),(0,-1),( -1,0),(-1,-1),(1,-1),(-1,1)]
+        for w in self.words:
+            placed = False
+            for attempt in range(300):
+                r = random.randint(0, self.size-1)
+                c = random.randint(0, self.size-1)
+                dr, dc = random.choice(dirs)
+                if self._can_place(r,c,dr,dc,w):
+                    coords = []
+                    for i,ch in enumerate(w):
+                        rr, cc = r + i*dr, c + i*dc
+                        self.grid[rr][cc] = ch
+                        coords.append((rr,cc))
+                    self.placements[w] = coords
+                    placed = True
+                    break
+            if not placed:
+                # ignore placement failure; grid fill will handle
+                pass
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.grid[r][c] == ' ':
+                    self.grid[r][c] = random.choice(string.ascii_uppercase)
+
+class DailyPuzzleSession(GameSession):
+    def __init__(self, chat_id, words):
+        super().__init__(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None, mode="daily")
+        self.words = words
+        self.grid = [[' ' for _ in range(self.size)] for _ in range(self.size)]
+        # place words similarly to GameSession
+        dirs = [(0,1),(1,0),(1,1),(-1,0),(0,-1),(-1,-1),(1,-1),(-1,1)]
+        self.placements = {}
+        for w in self.words:
+            placed = False
+            for _ in range(300):
+                r = random.randint(0, self.size-1); c = random.randint(0, self.size-1)
+                dr, dc = random.choice(dirs)
+                if self._can_place(r,c,dr,dc,w):
+                    coords = []
+                    for i,ch in enumerate(w):
+                        rr, cc = r + i*dr, c + i*dc
+                        self.grid[rr][cc] = ch
+                        coords.append((rr,cc))
+                    self.placements[w] = coords
+                    placed = True
+                    break
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.grid[r][c] == ' ':
+                    self.grid[r][c] = random.choice(string.ascii_uppercase)
+
+# ----------------------------
+# HELPERS: safe editing and sending
+# ----------------------------
+def safe_edit_caption(chat_id, message_id, caption, reply_markup=None):
     try:
-        bot.send_message(user_id, text, parse_mode="HTML", reply_markup=reply_markup)
-        try:
-            bot.send_message(chat_id, f"🔔 I sent the details to your private chat, {html.escape(bot.get_chat(user_id).first_name or '')}.")
-        except Exception:
-            pass
+        bot.edit_message_caption(caption, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
         return True
     except Exception:
-        try:
-            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
-            return False
-        except Exception:
-            return False
+        pass
+    try:
+        bot.edit_message_text(caption, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup, parse_mode="HTML")
+        return True
+    except Exception:
+        pass
+    return False
 
-# ========== COMMANDS: MENU / HELP / CMD ==========
-COMMANDS_TEXT = """
-🤖 Word Vortex - Full Command List
+def send_animation_or_photo(chat_id, bio, caption, reply_markup=None):
+    """Try send_animation, fallback to send_photo, fallback to send_message"""
+    try:
+        sent = bot.send_animation(chat_id, bio, caption=caption, reply_markup=reply_markup)
+        return sent
+    except Exception:
+        logger.exception("send_animation failed, trying photo fallback")
+    try:
+        bio.seek(0)
+        sentp = bot.send_photo(chat_id, bio, caption=caption, reply_markup=reply_markup)
+        return sentp
+    except Exception:
+        logger.exception("send_photo fallback failed, sending text")
+    try:
+        bot.send_message(chat_id, caption, reply_markup=reply_markup)
+    except Exception:
+        logger.exception("send_message fallback failed")
 
+# ----------------------------
+# MENU & CALLBACKS
+# ----------------------------
+COMMANDS_TEXT = """🤖 Word Vortex - Commands (use /cmd or Commands button)
 Games:
-- /new : Start normal 8x8 game
-- /new_hard : Start hard 10x10 game
-- /new_physics : Physics vocabulary mode
-- /new_chemistry : Chemistry vocabulary mode
-- /new_math : Math vocabulary mode
-- /new_jee : JEE mixed pool
-- /new_anagram : Anagram sprint (unscramble)
-- /new_speedrun : Speedrun (3 min)
-- /new_definehunt : Definition clues
-- /new_survival : Survival progressive rounds
-- /new_team : Team battle (join with /join_team)
-- /daily : Today's daily puzzle
-- /new_phrase : Hidden phrase bonus
+ /new, /new_hard, /new_physics, /new_chemistry, /new_math, /new_jee
+ /new_anagram, /new_speedrun, /new_definehunt, /new_survival, /new_team, /daily, /new_phrase
 
-In-Game:
-- Use inline buttons: Found It, Hint, Score
-- /hint : Buy a hint (costs points)
-- /endgame : Force-stop (admin/owner)
+In-game:
+ Found It (button) -> ForceReply to type the word
+ /hint -> buy hint (-50)
+ /endgame -> admin/owner only
 
-Profile & Utility:
-- /mystats or /scorecard : Show your stats
-- /balance : Show hint balance
-- /leaderboard : Show top players
-- /define <word> : Get word definition
-- /review <text> : Submit review
-- /myreviews : Show your reviews
-- /publishedreviews : See published reviews
+Profile:
+ /mystats, /scorecard, /balance, /leaderboard
 
-Admin/Owner:
-- /addpoints <id|@username> <amount> [score|balance] (default: balance)
-- /broadcast <message>
-- /addadmin <id|@username>
-- /deladmin <id|@username>
-- /admins
-- /reset_leaderboard
-- /restart
-- /publishreview <id>
+Reviews:
+ /review <text>, /myreviews, /publishedreviews
 
-Use /cmdinfo <command> to get detailed help about a command.
+Owner/Admin:
+ /addpoints <id|@username> <amount> [score|balance]
+ /broadcast <message>, /addadmin, /deladmin, /admins
+ /reset_leaderboard, /publishreview <id>, /restart
+ /cmdinfo <command> - detailed help
 """
 
 @bot.message_handler(commands=["cmd"])
-def cmd_handler_cmd(m):
+def cmd_cmd(m):
     bot.reply_to(m, COMMANDS_TEXT)
 
 @bot.message_handler(commands=["cmdinfo"])
-def cmd_handler_cmdinfo(m):
+def cmd_cmdinfo(m):
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(m, "Usage: /cmdinfo <command>\nE.g., /cmdinfo /new_physics")
+        bot.reply_to(m, "Usage: /cmdinfo <command>")
         return
-    cmd = parts[1].strip()
-    info = {
-        "/new": "Start a normal 8x8 word-grid game. Use in groups.",
-        "/new_hard": "Start a hard 10x10 game (longer words).",
-        "/new_physics": "Physics-themed words selected randomly each game.",
-        "/new_anagram": "Anagram Sprint: bot shows scrambled words; type the correct word.",
-        "/new_team": "Team Battle: users join teams; teams compete on the same grid.",
-        "/review": "/review <your text> — submits a review stored for owner review.",
-        # add entries as needed...
+    key = parts[1].strip().lower()
+    info_map = {
+        "/new": "Start an 8x8 standard game. Use in groups.",
+        "/new_hard": "Start a 10x10 hard game.",
+        "/new_physics": "Physics-specific words (random selection).",
+        "/new_anagram": "Anagram Sprint: solve scrambled words quickly.",
+        "/new_team": "Start team battle; players use /join_team to join.",
+        "/review": "Submit review: /review <text>",
     }
-    msg = info.get(cmd, f"No detailed help found for {cmd}. Use /cmd to get full list.")
-    bot.reply_to(m, msg)
+    bot.reply_to(m, info_map.get(key, f"No detailed help for {key}. Use /cmd for full list."))
 
-# ========== MAIN MENU HANDLERS ==========
 @bot.message_handler(commands=["start","help"])
-def start_handler(m):
+def start_menu(m):
     name = m.from_user.first_name or m.from_user.username or "Player"
-    db.register_user(m.from_user.id, name)
-    # notify owner
+    db.get_user(m.from_user.id, name)
     if OWNER_ID:
         try:
-            bot.send_message(OWNER_ID, f"🔔 /start by {html.escape(name)} ({m.from_user.id}) in chat {m.chat.id}")
+            bot.send_message(OWNER_ID, f"🔔 /start used by {name} ({m.from_user.id}) chat {m.chat.id}")
         except Exception:
             pass
-
-    text = f"👋 Hi <b>{html.escape(name)}</b>! Welcome to Word Vortex.\nChoose an option (Commands open in your PM)."
+    txt = f"👋 Hello <b>{html.escape(name)}</b>!\nWelcome to Word Vortex. Click a button."
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"),
            InlineKeyboardButton("🔄 Check Join", callback_data="check_join"))
@@ -719,32 +945,42 @@ def start_handler(m):
            InlineKeyboardButton("👤 My Stats", callback_data="menu_stats"))
     kb.add(InlineKeyboardButton("🐞 Report Issue", callback_data="open_issue"),
            InlineKeyboardButton("⭐ Reviews", callback_data="menu_review"))
-    kb.add(InlineKeyboardButton("💳 Plans", callback_data="open_plans"),
-           InlineKeyboardButton("👨‍💻 Support", url=SUPPORT_GROUP_LINK))
-
+    kb.add(InlineKeyboardButton("💳 Plans", callback_data="open_plans"))
     try:
-        sent = bot.send_photo(m.chat.id, START_IMG_URL, caption=text, reply_markup=kb)
-        # optionally start a light menu "animation" (we simulate frames by changing an ephemeral message)
-        # start_menu_animation(m.chat.id, sent.message_id)
+        bot.send_photo(m.chat.id, START_IMG_URL, caption=txt, reply_markup=kb)
     except Exception:
-        bot.reply_to(m, text, reply_markup=kb)
+        bot.reply_to(m, txt, reply_markup=kb)
 
-# ========== CALLBACK HANDLER (menus) ==========
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(c):
+    logger.debug("Callback from %s in chat %s data=%s", c.from_user.id, c.message.chat.id, c.data)
     data = c.data
     cid = c.message.chat.id
     uid = c.from_user.id
 
-    # small ack
     try:
         bot.answer_callback_query(c.id, "")
     except:
         pass
 
-    # helpers
-    def pm_or_group(msg_text, reply_markup=None):
-        return send_to_pm_or_group(uid, cid, msg_text, reply_markup=reply_markup)
+    def pm_or_group(msg, markup=None):
+        try:
+            bot.send_message(uid, msg, parse_mode="HTML", reply_markup=markup)
+            try:
+                bot.send_message(cid, f"🔔 I sent details to your private chat.")
+            except:
+                pass
+            return True
+        except Exception:
+            try:
+                bot.send_message(cid, msg, parse_mode="HTML", reply_markup=markup)
+                return False
+            except Exception:
+                try:
+                    bot.answer_callback_query(c.id, "❌ Could not open. Start a private chat with me.", show_alert=True)
+                except:
+                    pass
+                return False
 
     if data == "check_join":
         if is_subscribed(uid):
@@ -752,9 +988,9 @@ def callback_handler(c):
                 bot.delete_message(cid, c.message.message_id)
             except:
                 pass
-            start_handler(c.message)
+            start_menu(c.message)
             try:
-                bot.answer_callback_query(c.id, "✅ Verified! Welcome.")
+                bot.answer_callback_query(c.id, "✅ Verified!")
             except:
                 pass
         else:
@@ -764,41 +1000,19 @@ def callback_handler(c):
                 pass
         return
 
-    if data == "open_plans":
-        txt = "💳 Plans:\n\n" + "\n".join([f"- {p['points']} pts: ₹{p['price_rs']}" for p in PLANS])
-        txt += f"\n\nContact owner: {SUPPORT_GROUP_LINK}"
+    if data == "help_play":
+        txt = ("<b>Game Modes</b>\n" +
+               "/new - Normal\n/new_hard - Hard\n/new_physics - Physics\n/new_chemistry - Chemistry\n/new_math - Math\n/new_jee - JEE\n/new_anagram - Anagram\n/new_speedrun - Speedrun\n/new_definehunt - Definition Hunt\n/new_survival - Survival\n/new_team - Team Battle\n/daily - Daily Puzzle\n/new_phrase - Hidden Phrase\n")
         pm_or_group(txt)
         return
 
-    if data == "help_play":
-        txt = ("🎮 Game Modes:\n\n"
-               "/new - 8x8 normal\n"
-               "/new_hard - 10x10 hard\n"
-               "/new_physics - physics words\n"
-               "/new_chemistry - chemistry words\n"
-               "/new_math - math words\n"
-               "/new_jee - JEE mixed\n"
-               "/new_anagram - anagrams\n"
-               "/new_speedrun - 3-min speedrun\n"
-               "/new_definehunt - definitions clues\n"
-               "/new_survival - progressive rounds\n"
-               "/new_team - team battle\n"
-               "/daily - daily challenge\n"
-               "/new_phrase - hidden phrase")
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
-        pm_or_group(txt, reply_markup=kb)
-        return
-
     if data == "help_cmd":
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
-        pm_or_group(COMMANDS_TEXT, reply_markup=kb)
+        pm_or_group(COMMANDS_TEXT)
         return
 
     if data == "menu_lb":
-        top = db.get_top_players(10)
-        txt = "🏆 Global Leaderboard\n\n"
+        top = db.get_top_players()
+        txt = "🏆 <b>Leaderboard</b>\n\n"
         for i, (n, s) in enumerate(top, 1):
             txt += f"{i}. {html.escape(n)} - {s} pts\n"
         pm_or_group(txt)
@@ -809,25 +1023,22 @@ def callback_handler(c):
         session_pts = 0
         if cid in games:
             session_pts = games[cid].players_scores.get(uid, 0)
-        txt = (f"📋 Your Stats\n"
-               f"Name: {html.escape(user['name'])}\n"
-               f"Total Score: {user['total_score']}\n"
-               f"Wins: {user['wins']}\n"
-               f"Games Played: {user['games_played']}\n"
-               f"Session Points: {session_pts}\n"
-               f"Hint Balance: {user['hint_balance']}")
+        txt = (f"📋 <b>Your Stats</b>\nName: {html.escape(user['name'])}\nTotal Score: {user['total_score']}\nWins: {user['wins']}\nGames: {user['games_played']}\nSession Points: {session_pts}\nHint Balance: {user['hint_balance']}")
+        pm_or_group(txt)
+        return
+
+    if data == "open_plans":
+        txt = "💳 Plans:\n" + "\n".join([f"- {p['points']} pts : ₹{p['price_rs']}" for p in PLANS])
         pm_or_group(txt)
         return
 
     if data == "open_issue":
-        prompt = f"@{c.from_user.username or c.from_user.first_name} Type your issue here or use /issue <text>"
         try:
-            bot.send_message(uid, prompt, reply_markup=ForceReply(selective=True))
+            bot.send_message(uid, f"@{c.from_user.username or c.from_user.first_name} Please type your issue below or use /issue <text>:", reply_markup=ForceReply(selective=True))
             bot.answer_callback_query(c.id, "✍️ Prompt sent to your PM.")
         except:
             try:
-                bot.send_message(cid, prompt, reply_markup=ForceReply(selective=True))
-                bot.answer_callback_query(c.id, "✍️ Prompt opened here.")
+                bot.send_message(cid, "Please type your issue here:", reply_markup=ForceReply(selective=True))
             except:
                 bot.answer_callback_query(c.id, "❌ Could not open issue prompt.", show_alert=True)
         return
@@ -839,24 +1050,23 @@ def callback_handler(c):
             for r in rows:
                 txt += f"ID {r['review_id']}: {r['review_text'][:80]}... ({'Published' if r['published'] else 'Pending'})\n"
         else:
-            txt = "You haven't submitted reviews. Use /review <text> to submit."
+            txt = "You have no reviews. Use /review <text> to submit."
         pm_or_group(txt)
         return
 
-    # Game callbacks handled separately (found/hint/score) in other parts of code
+    # in-game callbacks
     if data in ("game_guess", "game_hint", "game_score"):
-        # pass through to existing behavior by simulating click handling
+        # forward to the same logic as buttons (handled in code that sends inline buttons)
         if data == "game_guess":
-            # ask user to type
             try:
                 username = c.from_user.username or c.from_user.first_name
-                msg = bot.send_message(cid, f"@{username} Type the word now:", reply_markup=ForceReply(selective=True))
-                bot.register_next_step_handler(msg, process_word_guess)
+                reply = bot.send_message(cid, f"@{username} Type the word now:", reply_markup=ForceReply(selective=True))
+                bot.register_next_step_handler(reply, process_word_guess)
                 bot.answer_callback_query(c.id, "✍️ Type your guess.")
             except Exception:
-                bot.answer_callback_query(c.id, "❌ Could not open input.", show_alert=True)
-        elif data == "game_hint":
-            # hint flow
+                bot.answer_callback_query(c.id, "❌ Could not open input", show_alert=True)
+            return
+        if data == "game_hint":
             if cid not in games:
                 bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
                 return
@@ -872,88 +1082,109 @@ def callback_handler(c):
             reveal = random.choice(hidden)
             db.update_stats(uid, hint_delta=-HINT_COST)
             bot.send_message(cid, f"💡 Hint: <code>{reveal}</code> (by {html.escape(c.from_user.first_name)})")
-            bot.answer_callback_query(c.id, "Hint sent.")
-        else:  # game_score
+            bot.answer_callback_query(c.id, "Hint revealed.")
+            return
+        if data == "game_score":
             if cid not in games:
                 bot.answer_callback_query(c.id, "❌ No active game.", show_alert=True)
                 return
             game = games[cid]
+            if not game.players_scores:
+                bot.answer_callback_query(c.id, "No scores yet.", show_alert=True)
+                return
             lb = sorted(game.players_scores.items(), key=lambda x: x[1], reverse=True)
             rows = []
-            for i, (u, pts) in enumerate(lb, 1):
-                user = db.get_user(u, "Player")
-                rows.append((i, user["name"], pts))
-            img = LeaderboardRenderer.draw_session_leaderboard(rows[:10])
+            for i, (uid2, pts) in enumerate(lb, 1):
+                u = db.get_user(uid2, "Player")
+                rows.append((i, u["name"], pts))
+            # send as image
+            img = draw_leaderboard_image(rows[:10])
             try:
                 bot.send_photo(cid, img, caption="Session Leaderboard")
                 bot.answer_callback_query(c.id, "Leaderboard shown.")
             except:
-                bot.answer_callback_query(c.id, "❌ Could not send leaderboard.", show_alert=True)
-        return
+                bot.answer_callback_query(c.id, "❌ Couldn't show leaderboard.", show_alert=True)
+            return
 
-    # default ack
+    # default
     try:
         bot.answer_callback_query(c.id, "")
     except:
         pass
 
-# ========== GAME STARTERS for all modes ==========
-def send_game_grid(session, starter_id=None):
-    """
-    Create an animated GIF (or static image) for the session grid and send it with buttons.
-    Stores message_id to session.message_id for caption updates.
-    """
-    img_bio = generate_grid_animation(session.grid, placements=session.placements, found=session.found, is_hard=session.is_hard, frames=8)
-    caption = (f"🔥 <b>WORD VORTEX STARTED!</b>\n"
-               f"Mode: {'Hard' if session.is_hard else 'Normal'}  |  {session.mode}\n"
-               f"⏱ Time Limit: {session.duration//60} min\n\n"
-               f"<b>Words to find:</b>\n{session.get_hint_text()}")
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess"))
-    markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data="game_hint"),
-               InlineKeyboardButton("📊 Score", callback_data="game_score"))
+# ----------------------------
+# LEADERBOARD IMAGE
+# ----------------------------
+def draw_leaderboard_image(rows):
+    width = 700
+    height = max(120, 60 + 40 * len(rows))
+    img = Image.new("RGB", (width, height), "#081028")
+    d = ImageDraw.Draw(img)
     try:
-        sent = bot.send_animation(session.chat_id, img_bio, caption=caption, reply_markup=markup)
-        session.message_id = sent.message_id
-    except Exception:
+        fpath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        title_font = ImageFont.truetype(fpath, 26)
+        row_font = ImageFont.truetype(fpath, 20)
+    except:
+        title_font = ImageFont.load_default()
+        row_font = ImageFont.load_default()
+    d.text((20, 10), "Session Leaderboard", fill="#ffd700", font=title_font)
+    y = 50
+    for idx, name, pts in rows:
+        d.text((20, y), f"{idx}. {name}", fill="#fff", font=row_font)
+        d.text((520, y), f"{pts} pts", fill="#7be495", font=row_font)
+        y += 40
+    bio = io.BytesIO()
+    img.save(bio, "PNG")
+    bio.seek(0)
+    return bio
+
+# ----------------------------
+# START / SEND GAME GRID (animation)
+# ----------------------------
+def send_grid_for_session(session, starter_id=None):
+    try:
+        img_bio = generate_grid_animation(session.grid, placements=session.placements, found=session.found, is_hard=session.is_hard, frames=8)
+        caption = (f"🔥 <b>WORD VORTEX</b>\nMode: {'Hard' if session.is_hard else 'Normal'} | {session.mode}\n"
+                   f"⏱ Time Limit: {session.duration//60} min\n\n{session.get_hint_text()}")
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess"))
+        markup.add(InlineKeyboardButton("💡 Hint (-50)", callback_data="game_hint"),
+                   InlineKeyboardButton("📊 Score", callback_data="game_score"))
+        sent = send_animation_or_photo(session.chat_id, img_bio, caption, reply_markup=markup)
+        # if send_animation_or_photo returned a message-like object set message_id where available
         try:
-            # fallback static
-            img_bio.seek(0)
-            bot.send_photo(session.chat_id, img_bio, caption=caption, reply_markup=markup)
+            if sent and hasattr(sent, "message_id"):
+                session.message_id = sent.message_id
+            else:
+                session.message_id = None
         except Exception:
-            bot.send_message(session.chat_id, caption, reply_markup=markup)
-
-def start_session_and_notify(session, starter_name):
-    games[session.chat_id] = session
-    db.update_stats(starter_id := starter_name and starter_name or 0, games_played_delta=1)  # safe update; starter handled separately
-    send_game_grid(session, starter_id)
-    session.start_timer()
-    # persist sessions file
-    persist_all_sessions()
-    if OWNER_ID:
+            session.message_id = None
+    except Exception:
+        logger.exception("Failed to send grid for session")
         try:
-            bot.send_message(OWNER_ID, f"🎮 Game started in chat {session.chat_id} by {starter_name}. Mode: {session.mode}")
-        except:
-            pass
+            bot.send_message(session.chat_id, f"Game started. Words:\n{session.get_hint_text()}", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess")))
+        except Exception:
+            logger.exception("Failed to post fallback start message")
 
-# Wrapper for starting specific modes
-def start_game_command(chat_id, starter, mode="normal"):
-    """
-    Creates proper session object by mode string and starts it.
-    Returns session.
-    """
+# ----------------------------
+# START GAME wrapper
+# ----------------------------
+def start_game(chat_id:int, starter_id:int, mode:str="normal"):
+    if chat_id in games:
+        bot.send_message(chat_id, "⚠️ A game is already active here. Use /endgame to stop it.")
+        return
     if mode == "normal":
-        s = GameSession(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None, mode="normal")
+        s = GameSession(chat_id, is_hard=False, word_pool=None, mode="normal")
     elif mode == "hard":
-        s = GameSession(chat_id, is_hard=True, duration=GAME_DURATION, word_pool=None, mode="hard")
+        s = GameSession(chat_id, is_hard=True, mode="hard")
     elif mode == "physics":
-        s = GameSession(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=PHYSICS_POOL, mode="physics")
+        s = GameSession(chat_id, is_hard=False, mode="physics", word_pool=PHYSICS_POOL)
     elif mode == "chemistry":
-        s = GameSession(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=CHEMISTRY_POOL, mode="chemistry")
+        s = GameSession(chat_id, is_hard=False, mode="chemistry", word_pool=CHEMISTRY_POOL)
     elif mode == "math":
-        s = GameSession(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=MATH_POOL, mode="math")
+        s = GameSession(chat_id, is_hard=False, mode="math", word_pool=MATH_POOL)
     elif mode == "jee":
-        s = GameSession(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=JEE_POOL, mode="jee")
+        s = GameSession(chat_id, is_hard=False, mode="jee", word_pool=JEE_POOL)
     elif mode == "anagram":
         s = AnagramSession(chat_id)
     elif mode == "speedrun":
@@ -970,99 +1201,90 @@ def start_game_command(chat_id, starter, mode="normal"):
     elif mode == "phrase":
         s = HiddenPhraseSession(chat_id)
     else:
-        s = GameSession(chat_id, is_hard=False, duration=GAME_DURATION, word_pool=None, mode=mode)
+        s = GameSession(chat_id, is_hard=False, mode=mode)
     games[chat_id] = s
-    # update starter games_played
-    db.update_stats(starter, games_played_delta=1)
-    # send grid & start timer
-    send_game_grid(s, starter)
-    s.start_timer()
-    persist_all_sessions()
+    # update starter stats
+    db.update_stats(starter_id, games_played_delta=1)
+    send_grid_for_session(s, starter_id)
+    try:
+        s.start_timer()
+    except Exception:
+        logger.exception("Failed to start timer for session")
+    save_sessions()
     if OWNER_ID:
         try:
-            bot.send_message(OWNER_ID, f"🎮 {mode} game started in chat {chat_id} by {starter}")
-        except:
+            bot.send_message(OWNER_ID, f"🎮 Game started: chat={chat_id} mode={mode} starter={starter_id}")
+        except Exception:
             pass
-    return s
 
-# ========== Message handlers for starting games ==========
+# ----------------------------
+# COMMANDS: start games (simple wrappers)
+# ----------------------------
 @bot.message_handler(commands=["new"])
-def handle_new(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="normal")
+def cmd_new(m): start_game(m.chat.id, m.from_user.id, mode="normal")
 
 @bot.message_handler(commands=["new_hard"])
-def handle_new_hard(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="hard")
+def cmd_new_hard(m): start_game(m.chat.id, m.from_user.id, mode="hard")
 
 @bot.message_handler(commands=["new_physics"])
-def handle_new_physics(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="physics")
+def cmd_new_physics(m): start_game(m.chat.id, m.from_user.id, mode="physics")
 
 @bot.message_handler(commands=["new_chemistry"])
-def handle_new_chem(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="chemistry")
+def cmd_new_chem(m): start_game(m.chat.id, m.from_user.id, mode="chemistry")
 
 @bot.message_handler(commands=["new_math"])
-def handle_new_math(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="math")
+def cmd_new_math(m): start_game(m.chat.id, m.from_user.id, mode="math")
 
 @bot.message_handler(commands=["new_jee"])
-def handle_new_jee(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="jee")
+def cmd_new_jee(m): start_game(m.chat.id, m.from_user.id, mode="jee")
 
 @bot.message_handler(commands=["new_anagram"])
-def handle_new_anagram(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="anagram")
+def cmd_new_anagram(m): start_game(m.chat.id, m.from_user.id, mode="anagram")
 
 @bot.message_handler(commands=["new_speedrun"])
-def handle_new_speedrun(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="speedrun")
+def cmd_new_speedrun(m): start_game(m.chat.id, m.from_user.id, mode="speedrun")
 
 @bot.message_handler(commands=["new_definehunt"])
-def handle_new_definehunt(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="definehunt")
+def cmd_new_definehunt(m): start_game(m.chat.id, m.from_user.id, mode="definehunt")
 
 @bot.message_handler(commands=["new_survival"])
-def handle_new_survival(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="survival")
+def cmd_new_survival(m): start_game(m.chat.id, m.from_user.id, mode="survival")
 
 @bot.message_handler(commands=["new_team"])
-def handle_new_team(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="team")
-    bot.send_message(m.chat.id, "Team battle started. Players: use /join_team to join. Admins can assign via /teamadd @user A")
+def cmd_new_team(m):
+    start_game(m.chat.id, m.from_user.id, mode="team")
+    bot.send_message(m.chat.id, "Team battle started. Players: use /join_team to join.")
 
 @bot.message_handler(commands=["daily"])
-def handle_daily(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="daily")
+def cmd_daily(m): start_game(m.chat.id, m.from_user.id, mode="daily")
 
 @bot.message_handler(commands=["new_phrase"])
-def handle_phrase(m):
-    start_game_command(m.chat.id, m.from_user.id, mode="phrase")
+def cmd_phrase(m): start_game(m.chat.id, m.from_user.id, mode="phrase")
 
-# ========== Team battle simple join/assign ==========
+# ----------------------------
+# Team join / assign
+# ----------------------------
 @bot.message_handler(commands=["join_team"])
 def cmd_join_team(m):
     cid = m.chat.id
     if cid not in games or not isinstance(games[cid], TeamGameSession):
-        bot.reply_to(m, "No team battle active here. Use /new_team to start.")
+        bot.reply_to(m, "No team battle active here.")
         return
-    session = games[cid]
+    s = games[cid]
     uid = m.from_user.id
-    # auto-balance: add to smaller team
-    if uid in session.team_a_ids or uid in session.team_b_ids:
+    if uid in s.team_a_ids or uid in s.team_b_ids:
         bot.reply_to(m, "You're already in a team.")
         return
-    if len(session.team_a_ids) <= len(session.team_b_ids):
-        session.team_a_ids.append(uid)
+    if len(s.team_a_ids) <= len(s.team_b_ids):
+        s.team_a_ids.append(uid)
         bot.reply_to(m, "You joined Team A.")
     else:
-        session.team_b_ids.append(uid)
+        s.team_b_ids.append(uid)
         bot.reply_to(m, "You joined Team B.")
-    persist_all_sessions()
+    save_sessions()
 
 @bot.message_handler(commands=["teamadd"])
 def cmd_teamadd(m):
-    # admin command: /teamadd @user A (or B)
     if not db.is_admin(m.from_user.id):
         bot.reply_to(m, "Only admin/owner can assign teams.")
         return
@@ -1070,48 +1292,42 @@ def cmd_teamadd(m):
     if len(parts) < 3:
         bot.reply_to(m, "Usage: /teamadd <@username|id> <A|B>")
         return
-    target = parts[1]
-    team = parts[2].upper()
-    if team not in ("A", "B"):
+    target = parts[1]; team = parts[2].upper()
+    if team not in ("A","B"):
         bot.reply_to(m, "Team must be A or B.")
         return
     try:
         if target.startswith("@"):
-            chat = bot.get_chat(target)
-            tid = chat.id
+            ch = bot.get_chat(target); tid = ch.id
         else:
             tid = int(target)
-    except Exception:
-        bot.reply_to(m, "Could not find user.")
+    except:
+        bot.reply_to(m, "Could not resolve user.")
         return
     cid = m.chat.id
     if cid not in games or not isinstance(games[cid], TeamGameSession):
-        bot.reply_to(m, "No team game in this chat.")
+        bot.reply_to(m, "No team game here.")
         return
-    session = games[cid]
-    # remove if present
-    if tid in session.team_a_ids:
-        session.team_a_ids.remove(tid)
-    if tid in session.team_b_ids:
-        session.team_b_ids.remove(tid)
-    if team == "A":
-        session.team_a_ids.append(tid)
-    else:
-        session.team_b_ids.append(tid)
-    bot.reply_to(m, f"Assigned user {tid} to Team {team}.")
-    persist_all_sessions()
+    s = games[cid]
+    if tid in s.team_a_ids: s.team_a_ids.remove(tid)
+    if tid in s.team_b_ids: s.team_b_ids.remove(tid)
+    if team == "A": s.team_a_ids.append(tid)
+    else: s.team_b_ids.append(tid)
+    bot.reply_to(m, f"Assigned user to Team {team}")
+    save_sessions()
 
-# ========== In-game: hint, endgame, guess processing, scorecard ==========
+# ----------------------------
+# Hint, endgame, scorecard
+# ----------------------------
 @bot.message_handler(commands=["hint"])
 def cmd_hint(m):
-    cid = m.chat.id
-    uid = m.from_user.id
+    cid = m.chat.id; uid = m.from_user.id
     if cid not in games:
-        bot.reply_to(m, "No active game.")
+        bot.reply_to(m, "No active game here.")
         return
     user = db.get_user(uid, m.from_user.first_name)
     if user["hint_balance"] < HINT_COST:
-        bot.reply_to(m, f"Not enough balance. You need {HINT_COST} pts.")
+        bot.reply_to(m, f"Insufficient balance. You need {HINT_COST} pts.")
         return
     game = games[cid]
     hidden = [w for w in game.words if w not in game.found]
@@ -1126,7 +1342,7 @@ def cmd_hint(m):
 def cmd_endgame(m):
     cid = m.chat.id
     if cid not in games:
-        bot.reply_to(m, "No active game.")
+        bot.reply_to(m, "No active game here.")
         return
     if not db.is_admin(m.from_user.id) and m.from_user.id != OWNER_ID:
         bot.reply_to(m, "Only admin/owner can stop the game.")
@@ -1143,14 +1359,26 @@ def cmd_scorecard(m):
     if gid in games:
         session_points = games[gid].players_scores.get(uid, 0)
     txt = (f"📋 <b>Your Scorecard</b>\n"
-           f"Name: {html.escape(u['name'])}\n"
-           f"Total Score: {u['total_score']}\n"
-           f"Wins: {u['wins']}\n"
-           f"Session Points (this chat): {session_points}\n"
-           f"Hint Balance: {u['hint_balance']}")
+           f"Name: {html.escape(u['name'])}\nTotal Score: {u['total_score']}\nWins: {u['wins']}\n"
+           f"Session Points: {session_points}\nHint Balance: {u['hint_balance']}")
     bot.reply_to(m, txt)
 
-# ========== Addpoints & Admin ==========
+@bot.message_handler(commands=["balance"])
+def cmd_balance(m):
+    u = db.get_user(m.from_user.id, m.from_user.first_name)
+    bot.reply_to(m, f"💰 Your hint balance: {u['hint_balance']} pts")
+
+@bot.message_handler(commands=["leaderboard"])
+def cmd_leaderboard(m):
+    top = db.get_top_players()
+    txt = "🏆 Top Players\n\n"
+    for i, (n, s) in enumerate(top, 1):
+        txt += f"{i}. {html.escape(n)} - {s} pts\n"
+    bot.reply_to(m, txt)
+
+# ----------------------------
+# addpoints, broadcast, admins
+# ----------------------------
 @bot.message_handler(commands=["addpoints"])
 def cmd_addpoints(m):
     if m.from_user.id != OWNER_ID:
@@ -1160,23 +1388,19 @@ def cmd_addpoints(m):
     if len(parts) < 3:
         bot.reply_to(m, "Usage: /addpoints <id|@username> <amount> [score|balance]")
         return
-    target = parts[1]
+    target = parts[1]; amount = 0
     try:
         amount = int(parts[2])
     except:
-        bot.reply_to(m, "Amount must be integer.")
-        return
+        bot.reply_to(m, "Amount must be integer"); return
     mode = parts[3].lower() if len(parts) >= 4 else "balance"
-    # resolve user id if username given
     try:
         if target.startswith("@"):
-            ch = bot.get_chat(target)
-            tid = ch.id
+            ch = bot.get_chat(target); tid = ch.id
         else:
             tid = int(target)
-    except Exception:
-        bot.reply_to(m, "Could not resolve user. Make sure they started the bot or have public username.")
-        return
+    except:
+        bot.reply_to(m, "Could not resolve user"); return
     db.get_user(tid, getattr(ch, "username", "Player") if "ch" in locals() else "Player")
     if mode == "score":
         db.update_stats(tid, score_delta=amount)
@@ -1185,7 +1409,7 @@ def cmd_addpoints(m):
         db.update_stats(tid, hint_delta=amount)
         bot.reply_to(m, f"Added {amount} to hint balance of {tid}")
     try:
-        bot.send_message(tid, f"💸 You received {amount}pts ({mode}) from the owner.")
+        bot.send_message(tid, f"💸 You received {amount} pts ({mode}) from the owner.")
     except:
         pass
 
@@ -1196,111 +1420,79 @@ def cmd_broadcast(m):
         return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(m, "Usage: /broadcast <message>")
-        return
+        bot.reply_to(m, "Usage: /broadcast <message>"); return
     msg = parts[1]
     users = db.all_user_ids()
     success = 0; failed = 0
     for uid in users:
         try:
-            bot.send_message(uid, msg)
-            success += 1
+            bot.send_message(uid, msg); success += 1
         except:
             failed += 1
-    bot.reply_to(m, f"Broadcast complete. success={success}, failed={failed}")
+    bot.reply_to(m, f"Broadcast done. success={success}, failed={failed}")
 
-@bot.message_handler(commands=["addadmin"])
-def cmd_addadmin(m):
-    if m.from_user.id != OWNER_ID:
-        bot.reply_to(m, "Only owner can use this.")
-        return
-    parts = m.text.split()
-    if len(parts) < 2:
-        bot.reply_to(m, "Usage: /addadmin <id|@username>")
-        return
-    target = parts[1]
-    try:
-        if target.startswith("@"):
-            ch = bot.get_chat(target); aid = ch.id
-        else:
-            aid = int(target)
-    except:
-        bot.reply_to(m, "Could not resolve user.")
-        return
-    db.add_admin(aid); bot.reply_to(m, f"Added admin {aid}")
-
-@bot.message_handler(commands=["deladmin"])
-def cmd_deladmin(m):
-    if m.from_user.id != OWNER_ID:
-        bot.reply_to(m, "Only owner can use this.")
-        return
-    parts = m.text.split()
-    if len(parts) < 2:
-        bot.reply_to(m, "Usage: /deladmin <id|@username>")
-        return
-    target = parts[1]
-    try:
-        if target.startswith("@"):
-            ch = bot.get_chat(target); aid = ch.id
-        else:
-            aid = int(target)
-    except:
-        bot.reply_to(m, "Could not resolve user."); return
-    db.remove_admin(aid); bot.reply_to(m, f"Removed admin {aid}")
-
-@bot.message_handler(commands=["admins"])
+@bot.message_handler(commands=["addadmin","deladmin","admins"])
 def cmd_admins(m):
-    admins = db.list_admins()
-    txt = "Admins:\n"
-    for a in admins:
-        txt += f"- {a}\n"
-    if OWNER_ID:
-        txt += f"\nOwner: {OWNER_ID}"
-    bot.reply_to(m, txt)
+    if m.text.startswith("/addadmin"):
+        if m.from_user.id != OWNER_ID:
+            bot.reply_to(m, "Owner only."); return
+        parts = m.text.split()
+        if len(parts) < 2: bot.reply_to(m, "Usage: /addadmin <id|@username>"); return
+        target = parts[1]
+        try:
+            if target.startswith("@"):
+                ch = bot.get_chat(target); aid = ch.id
+            else:
+                aid = int(target)
+        except:
+            bot.reply_to(m, "Could not resolve user"); return
+        db.add_admin(aid); bot.reply_to(m, f"Added admin {aid}"); return
+    if m.text.startswith("/deladmin"):
+        if m.from_user.id != OWNER_ID:
+            bot.reply_to(m, "Owner only."); return
+        parts = m.text.split()
+        if len(parts) < 2: bot.reply_to(m, "Usage: /deladmin <id|@username>"); return
+        target = parts[1]
+        try:
+            if target.startswith("@"):
+                ch = bot.get_chat(target); aid = ch.id
+            else:
+                aid = int(target)
+        except:
+            bot.reply_to(m, "Could not resolve user"); return
+        db.remove_admin(aid); bot.reply_to(m, f"Removed admin {aid}"); return
+    if m.text.startswith("/admins"):
+        admins = db.list_admins()
+        txt = "Admins:\n" + "\n".join(str(a) for a in admins)
+        if OWNER_ID: txt += f"\nOwner: {OWNER_ID}"
+        bot.reply_to(m, txt); return
 
-@bot.message_handler(commands=["reset_leaderboard"])
-def cmd_reset_lb(m):
-    if m.from_user.id != OWNER_ID:
-        bot.reply_to(m, "Owner only.")
-        return
-    db.reset_leaderboard(); bot.reply_to(m, "Leaderboard reset.")
-
-@bot.message_handler(commands=["restart"])
-def cmd_restart(m):
-    if m.from_user.id != OWNER_ID:
-        bot.reply_to(m, "Owner only.")
-        return
-    bot.reply_to(m, "Restarting...")
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-# ========== Reviews ==========
+# ----------------------------
+# Reviews & define
+# ----------------------------
 @bot.message_handler(commands=["review"])
 def cmd_review(m):
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(m, "Usage: /review <your review text>")
-        return
-    text = parts[1]
-    db.add_review(m.from_user.id, m.from_user.username or m.from_user.first_name or str(m.from_user.id), text)
-    bot.reply_to(m, "Thanks! Your review has been saved and will be reviewed by the owner.")
+        bot.reply_to(m, "Usage: /review <text>"); return
+    db.add_review(m.from_user.id, m.from_user.username or m.from_user.first_name or str(m.from_user.id), parts[1])
+    bot.reply_to(m, "Thanks! Review saved.")
 
 @bot.message_handler(commands=["myreviews"])
 def cmd_myreviews(m):
     rows = db.get_user_reviews(m.from_user.id)
     if not rows:
-        bot.reply_to(m, "You have no reviews.")
-        return
+        bot.reply_to(m, "You have no reviews."); return
     txt = "Your reviews:\n\n"
     for r in rows:
-        txt += f"ID {r['review_id']}: {r['review_text'][:100]}... - {'Published' if r['published'] else 'Pending'}\n"
+        txt += f"ID {r['review_id']}: {r['review_text'][:120]}... - {'Published' if r['published'] else 'Pending'}\n"
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=["publishedreviews"])
 def cmd_publishedreviews(m):
     rows = db.get_published_reviews(40)
     if not rows:
-        bot.reply_to(m, "No published reviews yet.")
-        return
+        bot.reply_to(m, "No published reviews yet."); return
     txt = "Published reviews:\n\n"
     for r in rows:
         txt += f"{html.escape(r['username'])}: {r['review_text']}\n---\n"
@@ -1309,210 +1501,188 @@ def cmd_publishedreviews(m):
 @bot.message_handler(commands=["publishreview"])
 def cmd_publishreview(m):
     if m.from_user.id != OWNER_ID:
-        bot.reply_to(m, "Owner only.")
-        return
+        bot.reply_to(m, "Owner only."); return
     parts = m.text.split()
     if len(parts) < 2:
-        bot.reply_to(m, "Usage: /publishreview <id>")
-        return
+        bot.reply_to(m, "Usage: /publishreview <id>"); return
     try:
         rid = int(parts[1])
     except:
         bot.reply_to(m, "Invalid id"); return
-    db.publish_review(rid)
-    bot.reply_to(m, f"Published review {rid}")
+    db.publish_review(rid); bot.reply_to(m, f"Published review {rid}")
 
-# ========== DEFINE ==========
 @bot.message_handler(commands=["define"])
 def cmd_define(m):
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(m, "Usage: /define <word>")
-        return
+        bot.reply_to(m, "Usage: /define <word>"); return
     word = parts[1].strip()
     try:
         r = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=6)
-        data = r.json()
-        if isinstance(data, list) and data:
-            meanings = data[0].get("meanings", [])
-            if meanings:
-                defs = meanings[0].get("definitions", [])
-                if defs:
-                    d = defs[0].get("definition", "No definition")
-                    ex = defs[0].get("example", "")
-                    txt = f"📚 <b>{html.escape(word)}</b>\n{html.escape(d)}"
-                    if ex:
-                        txt += f"\n\n<i>Example:</i> {html.escape(ex)}"
-                    bot.reply_to(m, txt)
-                    return
+        d = r.json()
+        if isinstance(d, list) and d:
+            defs = d[0].get("meanings", [])[0].get("definitions", [])
+            if defs:
+                definition = defs[0].get("definition", "No definition")
+                example = defs[0].get("example", "")
+                txt = f"📚 <b>{word}</b>\n{html.escape(definition)}"
+                if example: txt += f"\n\n<i>Example:</i> {html.escape(example)}"
+                bot.reply_to(m, txt); return
         bot.reply_to(m, f"No definition found for {word}")
     except Exception:
+        logger.exception("define failed")
         bot.reply_to(m, "Error fetching definition")
 
-# ========== CORE GUESS PROCESSING & END GAME ==========
+# ----------------------------
+# test animation utility (debug)
+# ----------------------------
+@bot.message_handler(commands=["test_anim"])
+def cmd_test_anim(m):
+    try:
+        grid = [['A','B','C','D','E','F'],
+                ['G','H','I','J','K','L'],
+                ['M','N','O','P','Q','R'],
+                ['S','T','U','V','W','X'],
+                ['Y','Z','A','B','C','D'],
+                ['E','F','G','H','I','J']]
+        placements = {'ABC': [(0,0),(0,1),(0,2)], 'MNO': [(2,0),(2,1),(2,2)]}
+        found = set()
+        bio = generate_grid_animation(grid, placements=placements, found=found, is_hard=False, frames=6)
+        bio.seek(0)
+        bot.send_animation(m.chat.id, bio, caption="Test animated grid GIF")
+    except Exception:
+        logger.exception("test_anim failed")
+        bot.reply_to(m, "Failed to generate test animation; check server logs.")
+
+# ----------------------------
+# Core guess processing (handles different modes roughly)
+# ----------------------------
 def process_word_guess(m):
     cid = m.chat.id
     if cid not in games:
-        try:
-            bot.reply_to(m, "No active game here.")
-        except:
-            pass
+        bot.reply_to(m, "No active game here.")
         return
     text = (m.text or "").strip().upper()
     if not text:
         return
-    game = games[cid]
+    session = games[cid]
     uid = m.from_user.id
-    name = m.from_user.first_name or m.from_user.username or "Player"
-    last = game.players_last_guess.get(uid, 0)
+    uname = m.from_user.first_name or m.from_user.username or "Player"
+    last = session.players_last_guess.get(uid, 0)
     now = time.time()
     if now - last < COOLDOWN:
-        try:
-            bot.reply_to(m, f"⏳ Wait {COOLDOWN}s between guesses.")
-        except:
-            pass
-        return
-    game.players_last_guess[uid] = now
+        bot.reply_to(m, f"⏳ Wait {COOLDOWN}s between guesses."); return
+    session.players_last_guess[uid] = now
     try:
         bot.delete_message(cid, m.message_id)
     except:
         pass
-    # special handling for Anagram mode
-    if getattr(game, "mode", "") == "anagram":
-        # mapping scrambled -> original stored in .scrambled_words
+
+    # Anagram mode special handling
+    if getattr(session, "mode", "") == "anagram":
+        # session.scrambled expected
         found_word = None
-        for orig, scrambled in game.scrambled_words.items():
+        for orig, scr in session.scrambled.items():
             if text == orig:
-                found_word = orig
-                break
-        if found_word:
-            if found_word in game.found:
-                bot.send_message(cid, f"⚠️ {found_word} already found.")
-            else:
-                game.found.add(found_word)
-                pts = NORMAL_POINTS
-                if len(game.found) == 1:
-                    pts = FIRST_BLOOD_POINTS
-                elif len(game.found) == len(game.words):
-                    pts = FINISHER_POINTS
-                game.players_scores[uid] = game.players_scores.get(uid, 0) + pts
-                db.update_stats(uid, score_delta=pts)
-                bot.send_message(cid, f"✅ {html.escape(name)} solved {found_word} (+{pts} pts)")
-                # no grid update (anagram), so just check end
-                if len(game.found) == len(game.words):
-                    end_game_session(cid, "win", uid)
+                found_word = orig; break
+        if not found_word:
+            bot.reply_to(m, f"❌ {html.escape(uname)} — '{html.escape(text)}' is incorrect.")
             return
-        else:
-            bot.send_message(cid, f"❌ {html.escape(name)} — '{html.escape(text)}' is incorrect.")
-            return
+        if found_word in session.found:
+            bot.reply_to(m, f"⚠️ {found_word} already found."); return
+        session.found.add(found_word)
+        pts = FIRST_BLOOD_POINTS if len(session.found) == 1 else FINISHER_POINTS if len(session.found) == len(session.words) else NORMAL_POINTS
+        session.players_scores[uid] = session.players_scores.get(uid, 0) + pts
+        db.update_stats(uid, score_delta=pts)
+        bot.send_message(cid, f"✅ {html.escape(uname)} solved {found_word} (+{pts} pts)")
+        if len(session.found) == len(session.words):
+            end_game_session(cid, "win", uid)
+        return
 
     # normal grid modes
-    if text in game.words:
-        if text in game.found:
-            bot.send_message(cid, f"⚠️ <b>{text}</b> is already found!")
-            return
-        game.found.add(text)
-        game.last_activity = time.time()
-        if len(game.found) == 1:
+    if text in session.words:
+        if text in session.found:
+            bot.send_message(cid, f"⚠️ {text} already found."); return
+        session.found.add(text)
+        session.last_activity = time.time()
+        if len(session.found) == 1:
             pts = FIRST_BLOOD_POINTS
-        elif len(game.found) == len(game.words):
+        elif len(session.found) == len(session.words):
             pts = FINISHER_POINTS
         else:
             pts = NORMAL_POINTS
-        prev = game.players_scores.get(uid, 0)
-        game.players_scores[uid] = prev + pts
+        session.players_scores[uid] = session.players_scores.get(uid, 0) + pts
         db.update_stats(uid, score_delta=pts)
-        bot_msg = bot.send_message(cid, f"✨ <b>Excellent!</b> {html.escape(name)} found <code>{text}</code> (+{pts} pts)")
-        threading.Timer(4, lambda: safe_delete(cid, bot_msg.message_id)).start()
-        # regenerate animated GIF showing the found line and post it, deleting old game image so chat stays tidy
+        notify = bot.send_message(cid, f"✨ {html.escape(uname)} found <code>{text}</code> (+{pts} pts)")
         try:
-            img_bio = generate_grid_animation(game.grid, placements=game.placements, found=game.found, is_hard=game.is_hard, frames=8)
-            try:
-                sent = bot.send_animation(cid, img_bio, caption=(f"🔥 <b>WORD VORTEX</b>\nMode: {'Hard' if game.is_hard else 'Normal'}\nWords:\n{game.get_hint_text()}"),
-                                          reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess"),
-                                                                                  InlineKeyboardButton("💡 Hint (-50)", callback_data="game_hint"),
-                                                                                  InlineKeyboardButton("📊 Score", callback_data="game_score")))
-                # delete old image if present
-                try:
-                    if game.message_id:
-                        bot.delete_message(cid, game.message_id)
-                except Exception:
-                    pass
-                game.message_id = sent.message_id
-            except Exception:
-                # fallback to static
-                img_bio.seek(0)
-                try:
-                    sentp = bot.send_photo(cid, img_bio, caption=(f"🔥 WORD VORTEX\n{game.get_hint_text()}"),
-                                            reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess")))
-                    try:
-                        if game.message_id:
-                            bot.delete_message(cid, game.message_id)
-                    except:
-                        pass
-                    game.message_id = sentp.message_id
-                except Exception:
-                    pass
+            threading.Timer(4, lambda: bot.delete_message(cid, notify.message_id)).start()
+        except:
+            pass
+        # regenerate animation & send
+        try:
+            bio = generate_grid_animation(session.grid, placements=session.placements, found=session.found, is_hard=session.is_hard, frames=8)
+            bio.seek(0)
+            send_animation_or_photo(cid, bio, caption=(f"🔥 <b>WORD VORTEX</b>\nMode: {'Hard' if session.is_hard else 'Normal'}\nWords:\n{session.get_hint_text()}"),
+                                   reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔍 Found It!", callback_data="game_guess"),
+                                                                           InlineKeyboardButton("💡 Hint (-50)", callback_data="game_hint"),
+                                                                           InlineKeyboardButton("📊 Score", callback_data="game_score")))
         except Exception:
-            logger.exception("Failed to regenerate animated image")
-        # check for end
-        if len(game.found) == len(game.words):
+            logger.exception("Failed to send updated animation")
+        if len(session.found) == len(session.words):
             end_game_session(cid, "win", uid)
     else:
         try:
-            msg = bot.send_message(cid, f"❌ {html.escape(name)} — '{html.escape(text)}' is not in the list.")
-            threading.Timer(3, lambda: safe_delete(cid, msg.message_id)).start()
+            err = bot.send_message(cid, f"❌ {html.escape(uname)} — '{html.escape(text)}' is not in the list.")
+            threading.Timer(3, lambda: bot.delete_message(cid, err.message_id)).start()
         except:
             pass
 
-def safe_delete(chat_id, mid):
-    try:
-        bot.delete_message(chat_id, mid)
-    except Exception:
-        pass
-
+# ----------------------------
+# end game
+# ----------------------------
 def end_game_session(cid, reason, winner_id=None):
     if cid not in games:
         return
-    session = games[cid]
-    session.active = False
-    if reason == "win":
-        winner = db.get_user(winner_id, "Player")
+    s = games[cid]
+    s.active = False
+    if reason == "win" and winner_id:
         db.update_stats(winner_id, win=True)
         db.record_game(cid, winner_id)
-        standings = sorted(session.players_scores.items(), key=lambda x: x[1], reverse=True)
-        text = f"🏆 GAME OVER — All words found!\nMVP: {html.escape(winner['name'])}\n\nStandings:\n"
+        standings = sorted(s.players_scores.items(), key=lambda x: x[1], reverse=True)
+        txt = f"🏆 GAME OVER — All words found!\n"
+        try:
+            winner = db.get_user(winner_id, "Player")
+            txt += f"MVP: {html.escape(winner['name'])}\n\n"
+        except:
+            pass
+        txt += "Standings:\n"
         for i, (uid, pts) in enumerate(standings, 1):
             u = db.get_user(uid, "Player")
-            text += f"{i}. {html.escape(u['name'])} - {pts} pts\n"
-        bot.send_message(cid, text)
+            txt += f"{i}. {html.escape(u['name'])} - {pts} pts\n"
+        bot.send_message(cid, txt)
     elif reason == "stopped":
-        bot.send_message(cid, "🛑 Game stopped by admin.")
+        bot.send_message(cid, "🛑 Game stopped manually.")
     elif reason == "timeout":
-        found_count = len(session.found)
-        rem = [w for w in session.words if w not in session.found]
-        text = f"⏰ Time's up! Found {found_count}/{len(session.words)}\nRemaining: {', '.join(rem) if rem else 'None'}"
-        bot.send_message(cid, text)
-    # remove persistent storage
-    if str(cid) in load_sessions_from_file():
-        # remove entry and save
-        data = load_sessions_from_file()
-        data.pop(str(cid), None)
-        save_sessions_to_file(data)
+        found_count = len(s.found)
+        remaining = [w for w in s.words if w not in s.found]
+        txt = f"⏰ Time's up! Found {found_count}/{len(s.words)}\nRemaining: {', '.join(remaining) if remaining else 'None'}"
+        bot.send_message(cid, txt)
     try:
         del games[cid]
     except:
         pass
+    save_sessions()
 
-# ========== START POLLING ==========
+# ----------------------------
+# Start polling
+# ----------------------------
 if __name__ == "__main__":
-    print("✅ Word Vortex Bot starting...")
-    # periodic persistence on shutdown
+    logger.info("Starting Word Vortex bot...")
     try:
         bot.infinity_polling(timeout=20, long_polling_timeout=5)
     except KeyboardInterrupt:
-        print("Shutting down...")
-        persist_all_sessions()
+        logger.info("Shutdown requested, saving sessions...")
+        save_sessions()
         sys.exit(0)
     except Exception:
         logger.exception("Polling crashed, restarting in 5s")
