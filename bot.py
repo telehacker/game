@@ -28,11 +28,11 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
-START_IMG_URL = "https://i.imgur.com/8XjQk9p.jpg"
+START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -415,13 +415,15 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        # PATTERN BACKGROUND
+        # NEW PATTERN BACKGROUND
         img = Image.new("RGB", (w, h), "#0a0e27")
         draw = ImageDraw.Draw(img)
+        # Grid pattern
         for x in range(0, w, 40):
             draw.line([(x, 0), (x, h)], fill=(30, 40, 60), width=1)
         for y in range(0, h, 40):
             draw.line([(0, y), (w, y)], fill=(30, 40, 60), width=1)
+        # Diagonal lines
         for i_line in range(-h, w, 80):
             draw.line([(i_line, 0), (i_line+h, h)], fill=(20, 30, 50), width=1)
 
@@ -495,7 +497,8 @@ class ImageRenderer:
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
 
-        # THIN LINES ON FOUND WORDS
+
+        # DRAW THIN LINES ON FOUND WORDS
         if found and placements:
             for word in found:
                 if word in placements and placements[word]:
@@ -506,6 +509,7 @@ class ImageRenderer:
                         y1 = gridy + start[0]*cell + cell//2
                         x2 = pad + end[1]*cell + cell//2
                         y2 = gridy + end[0]*cell + cell//2
+                        # Thin yellow line
                         draw.line([(x1,y1),(x2,y2)], fill="#FFEB3B", width=2)
                         r = 4
                         draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill="#FFEB3B")
@@ -742,7 +746,8 @@ def handle_guess(msg):
 
     if user[5] == 0 and len(session.found) == len(session.words):
         if db.add_achievement(uid, "first_win"):
-            bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
+            update_game(cid)  # UPDATE IMAGE WITH LINE!
+                bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
 
     bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
     bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
@@ -849,6 +854,10 @@ def shop_menu():
 # ═══════════════════════════════════════════════════════════════════
 @bot.message_handler(commands=['start','help'])
 def cmd_start(m):
+    uid = m.from_user.id
+    name = m.from_user.first_name or "Player"
+    username = m.from_user.username or ""
+
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
     uid = m.from_user.id
