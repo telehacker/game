@@ -61,7 +61,7 @@ CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = os.environ.get("FORCE_JOIN", "False").lower() in ("1", "true", "yes")
 
 SUPPORT_GROUP_LINK = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
-START_IMG_URL = os.environ.get("START_IMG_URL", "https://img.freepik.com/free-vector/word-search-puzzle_23-2149040310.jpg")
+START_IMG_URL = os.environ.get("START_IMG_URL", "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
