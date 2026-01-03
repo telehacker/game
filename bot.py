@@ -16,6 +16,7 @@ from typing import List, Tuple, Dict, Optional
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import telebot
+from flask import Flask
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 
 # ═══════════════════════════════════════════════════════════
@@ -33,6 +34,7 @@ SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -952,16 +954,38 @@ def callback(c):
 def fallback(m):
     if m.text and m.text.startswith('/'):
         return
+# Line 957 end
+return
+
+# ↓↓↓ YE NAYE LINES ADD KARO (line 958 se pehle) ↓↓↓
+# Flask Health Check
+@app.route('/')
+def health():
+    return "Bot Running ✅", 200
+
+@app.route('/health')
+def health_check():
+    return {"status": "ok"}, 200
 
 # ═══════════════════════════════════════════════════════════
 # RUN
 # ═══════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    logger.info("🚀 Word Vortex v8.5 - ALL FEATURES FIXED!")
-    logger.info("✅ Image loading with 3 fallbacks")
-    logger.info("✅ All buttons working (verify, shop, redeem, review)")
-    logger.info("✅ Achievements & Tournament")
-    logger.info("✅ Referral duplicate protection")
-    logger.info("✅ Game stop commands")
-    bot.infinity_polling()
+    import threading
+    
+    logger.info("🚀 Starting Word Vortex v8.5...")
+    logger.info("✅ Flask server on port 10000")
+    logger.info("✅ Bot starting...")
+    
+    # Bot thread
+    def run_bot():
+        bot.infinity_polling()
+    
+    t = threading.Thread(target=run_bot)
+    t.daemon = True
+    t.start()
+    
+    # Flask server
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
