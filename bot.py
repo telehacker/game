@@ -727,12 +727,28 @@ def handle_guess(msg):
     update_game(cid)
 
     if len(session.found) == len(session.words):
+    time.sleep(0.5)
+    
+    try:
+        bot.delete_message(cid, session.message_id)
+    except:
+        pass
+    
+    winner_text = "No players scored"
+    if session.players:
         winner = max(session.players.items(), key=lambda x: x[1])
         winner_user = db.get_user(winner[0])
         db.update_user(winner[0], wins=winner_user[5]+1)
-
-        bot.send_message(cid, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts")
-        del games[cid]
+        winner_text = f"🏆 Winner: {html.escape(winner_user[1])}\n💯 Score: {winner[1]} pts"
+    
+    bot.send_message(cid, 
+        f"🎊 <b>GAME COMPLETE!</b> 🎊\n\n"
+        f"✅ All words found!\n\n"
+        f"{winner_text}\n\n"
+        f"🎮 Play again: /new")
+    
+    del games[cid]
+    return
 
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
