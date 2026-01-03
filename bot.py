@@ -29,10 +29,10 @@ if not TOKEN:
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
 NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_updates")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
-START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
+START_IMG_URL = "https://i.imgur.com/8XjQk9p.jpg"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -415,8 +415,20 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        img = Image.new("RGB", (w, h), "#0a1628")
+        # PREMIUM PATTERN BACKGROUND
+        img = Image.new('RGB', (w, h), '#0a0e27')
         draw = ImageDraw.Draw(img)
+        
+        # Draw grid pattern
+        for x in range(0, w, 40):
+            draw.line([(x, 0), (x, h)], fill=(30, 40, 60), width=1)
+        for y in range(0, h, 40):
+            draw.line([(0, y), (w, y)], fill=(30, 40, 60), width=1)
+        
+        # Draw diagonal lines
+        for i_line in range(-h, w, 80):
+            draw.line([(i_line, 0), (i_line+h, h)], fill=(20, 30, 50), width=1)
+        
 
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -433,7 +445,7 @@ class ImageRenderer:
             small_font = ImageFont.load_default()
 
         # Header
-        draw.rectangle([0, 0, w, header], fill="#1a2942")
+        draw.rectangle([0, 0, w, header], fill="#0f1626")
         title = "WORD GRID (FIND WORDS)"
         try:
             bbox = draw.textbbox((0, 0), title, font=title_font)
@@ -455,7 +467,7 @@ class ImageRenderer:
 
                 shadow = 2
                 draw.rectangle([x+shadow, y+shadow, x+cell+shadow, y+cell+shadow], fill="#000000")
-                draw.rectangle([x, y, x+cell, y+cell], fill="#1e3a5f", outline="#3d5a7f", width=1)
+                draw.rectangle([x, y, x+cell, y+cell], fill=(15, 25, 45), outline="#3d5a7f", width=1)
 
                 ch = grid[r][c]
                 try:
@@ -487,24 +499,6 @@ class ImageRenderer:
         draw.rectangle([0, h-footer, w, h], fill="#0d1929")
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
-
-    # Draw lines for found words
-    if found and placements:
-        for word in found:
-            if word in placements and placements[word]:
-                coords = placements[word]
-                if len(coords) >= 2:
-                    start = coords[0]
-                    end = coords[-1]
-                    x1 = pad + start[1]*cell + cell//2
-                    y1 = header + pad + start[0]*cell + cell//2
-                    x2 = pad + end[1]*cell + cell//2
-                    y2 = header + pad + end[0]*cell + cell//2
-                    draw.line([(x1,y1),(x2,y2)], fill='#ffffff', width=8)
-                    draw.line([(x1,y1),(x2,y2)], fill='#ff4757', width=5)
-                    r = 6
-                    draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill='#ff4757')
-                    draw.ellipse([x2-r,y2-r,x2+r,y2+r], fill='#ff4757')
 
         bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
@@ -756,16 +750,19 @@ def handle_guess(msg):
 # CHANNEL JOIN CHECK
 # ═══════════════════════════════════════════════════════════════════
 def is_subscribed(user_id: int) -> bool:
+    if not FORCE_JOIN:
+        return True
+    if OWNER_ID and uid == OWNER_ID:
+        return True
     if not CHANNEL_USERNAME:
         return True
-    if OWNER_ID and user_id == OWNER_ID:
-        return True
     try:
-        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
-        return status in ("creator", "administrator", "member")
-    except:
-        return False
-
+        member = bot.get_chat_member(CHANNEL_USERNAME, uid)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception as e:
+        if 'user not found' in str(e).lower() or 'chat not found' in str(e).lower():
+            return True
+        return True
 def must_join_menu():
     kb = InlineKeyboardMarkup()
     if CHANNEL_USERNAME:
@@ -1635,13 +1632,13 @@ def callback(c):
         if not hidden:
             bot.answer_callback_query(c.id, "All found!", show_alert=True)
             return
-        # Check balance first
+        # Check and deduct hint cost
         user = db.get_user(uid)
-        if user[6] < HINT_COST:
-            bot.answer_callback_query(c.id, f'❌ Need {HINT_COST} pts!', show_alert=True)
+        cost = 25 if db.is_premium(uid) else HINT_COST
+        if user[7] < cost:
+            bot.answer_callback_query(c.id, f'❌ Need {cost} pts!', show_alert=True)
             return
-        # Deduct points
-        db.update_user(uid, points=user[6]-HINT_COST)
+        db.update_user(uid, hintbalance=user[7]-cost)
         reveal = random.choice(hidden)
         db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
