@@ -28,11 +28,11 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
-START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
+START_IMG_URL = "https://i.imgur.com/8XjQk9p.jpg"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -495,24 +495,7 @@ class ImageRenderer:
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
 
-        
-        # DRAW THIN LINES ON FOUND WORDS
-        if found and placements:
-            for word in found:
-                if word in placements and placements[word]:
-                    coords = placements[word]
-                    if len(coords) >= 2:
-                        start, end = coords[0], coords[-1]
-                        x1 = pad + start[1]*cell + cell//2
-                        y1 = gridy + start[0]*cell + cell//2
-                        x2 = pad + end[1]*cell + cell//2
-                        y2 = gridy + end[0]*cell + cell//2
-                        draw.line([(x1,y1),(x2,y2)], fill="#FFEB3B", width=2)
-                        r = 4
-                        draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill="#FFEB3B")
-                        draw.ellipse([x2-r,y2-r,x2+r,y2+r], fill="#FFEB3B")
-
-bio = io.BytesIO()
+        bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
         bio.seek(0)
         bio.name = "grid.png"
@@ -746,6 +729,7 @@ def handle_guess(msg):
             bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
 
     bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
+    update_game(cid)
     bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
 
     update_game(cid)
@@ -761,16 +745,18 @@ def handle_guess(msg):
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
 # ═══════════════════════════════════════════════════════════════════
-def is_subscribed(user_id: int) -> bool:
+def is_subscribed(uid):
+    if not FORCE_JOIN:
+        return True
+    if OWNER_ID and uid == OWNER_ID:
+        return True
     if not CHANNEL_USERNAME:
         return True
-    if OWNER_ID and user_id == OWNER_ID:
-        return True
     try:
-        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
-        return status in ("creator", "administrator", "member")
+        member = bot.get_chat_member(CHANNEL_USERNAME, uid)
+        return member.status in ['creator', 'administrator', 'member']
     except:
-        return False
+        return True
 
 def must_join_menu():
     kb = InlineKeyboardMarkup()
@@ -854,9 +840,6 @@ def cmd_start(m):
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
 
-    name = m.from_user.first_name or "Player"
-    username = m.from_user.username or ""
-    uid = m.from_user.id
 
     if not is_subscribed(uid):
         txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
@@ -1317,9 +1300,6 @@ def callback(c):
     uid = c.from_user.id
     data = c.data
 
-    cid = c.message.chat.id
-    uid = c.from_user.id
-    data = c.data
 
     # VERIFY - FIXED NO LOOP
     if data == "verify":
@@ -1649,6 +1629,13 @@ def callback(c):
         if not hidden:
             bot.answer_callback_query(c.id, "All found!", show_alert=True)
             return
+        user = db.get_user(uid)
+        cost = 25 if db.is_premium(uid) else HINT_COST
+        if user[7] < cost:
+            bot.answer_callback_query(c.id, f"❌ Need {cost} pts!", show_alert=True)
+            return
+        db.update_user(uid, hintbalance=user[7]-cost)
+
         reveal = random.choice(hidden)
         db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
