@@ -28,11 +28,11 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
-START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
+START_IMG_URL = "https://i.imgur.com/8XjQk9p.jpg"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -415,20 +415,15 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        # PREMIUM PATTERN BACKGROUND
+        # PATTERN BACKGROUND
         img = Image.new("RGB", (w, h), "#0a0e27")
         draw = ImageDraw.Draw(img)
-        
-        # Grid pattern
         for x in range(0, w, 40):
             draw.line([(x, 0), (x, h)], fill=(30, 40, 60), width=1)
         for y in range(0, h, 40):
             draw.line([(0, y), (w, y)], fill=(30, 40, 60), width=1)
-        
-        # Diagonal lines
         for i_line in range(-h, w, 80):
             draw.line([(i_line, 0), (i_line+h, h)], fill=(20, 30, 50), width=1)
-        
 
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -445,7 +440,7 @@ class ImageRenderer:
             small_font = ImageFont.load_default()
 
         # Header
-        draw.rectangle([0, 0, w, header], fill="#0f1626")
+        draw.rectangle([0, 0, w, header], fill="#1a2942")
         title = "WORD GRID (FIND WORDS)"
         try:
             bbox = draw.textbbox((0, 0), title, font=title_font)
@@ -467,7 +462,7 @@ class ImageRenderer:
 
                 shadow = 2
                 draw.rectangle([x+shadow, y+shadow, x+cell+shadow, y+cell+shadow], fill="#000000")
-                draw.rectangle([x, y, x+cell, y+cell], fill=(15, 25, 45), outline=(0, 255, 255), width=1)
+                draw.rectangle([x, y, x+cell, y+cell], fill="#1e3a5f", outline="#3d5a7f", width=1)
 
                 ch = grid[r][c]
                 try:
@@ -500,8 +495,7 @@ class ImageRenderer:
         draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
                  fill="#7f8c8d", font=small_font)
 
-        
-        # Draw THIN lines on found words
+        # THIN LINES ON FOUND WORDS
         if found and placements:
             for word in found:
                 if word in placements and placements[word]:
@@ -512,13 +506,11 @@ class ImageRenderer:
                         y1 = gridy + start[0]*cell + cell//2
                         x2 = pad + end[1]*cell + cell//2
                         y2 = gridy + end[0]*cell + cell//2
-                        # Thin yellow line
                         draw.line([(x1,y1),(x2,y2)], fill="#FFEB3B", width=2)
-                        # Small endpoint circles
                         r = 4
                         draw.ellipse([x1-r,y1-r,x1+r,y1+r], fill="#FFEB3B")
                         draw.ellipse([x2-r,y2-r,x2+r,y2+r], fill="#FFEB3B")
-        
+
         bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
         bio.seek(0)
@@ -768,18 +760,16 @@ def handle_guess(msg):
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
 # ═══════════════════════════════════════════════════════════════════
-def is_subscribed(uid):
-    if not FORCE_JOIN:
-        return True
-    if OWNER_ID and uid == OWNER_ID:
-        return True
+def is_subscribed(user_id: int) -> bool:
     if not CHANNEL_USERNAME:
         return True
-    try:
-        member = bot.get_chat_member(CHANNEL_USERNAME, uid)
-        return member.status in ['creator', 'administrator', 'member']
-    except:
+    if OWNER_ID and user_id == OWNER_ID:
         return True
+    try:
+        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
+        return status in ("creator", "administrator", "member")
+    except:
+        return False
 
 def must_join_menu():
     kb = InlineKeyboardMarkup()
@@ -862,7 +852,6 @@ def cmd_start(m):
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
     uid = m.from_user.id
-
 
     if not is_subscribed(uid):
         txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
@@ -1323,6 +1312,9 @@ def callback(c):
     uid = c.from_user.id
     data = c.data
 
+    cid = c.message.chat.id
+    uid = c.from_user.id
+    data = c.data
 
     # VERIFY - FIXED NO LOOP
     if data == "verify":
@@ -1489,7 +1481,7 @@ def callback(c):
         txt = (f"💳 <b>PURCHASE: {item['name']}</b>\n\n"
                f"Price: <b>₹{item['price']}</b>\n\n"
                f"📱 Send payment to:\n"
-               f"<b>UPI:</b> <code>ruhvaan@slc</code>\n\n"
+               f"<b>UPI:</b> <code>yourowner@upi</code>\n\n"
                f"After payment, send screenshot to @{SUPPORT_GROUP.split('/')[-1]}")
 
         db.add_purchase(uid, item['type'], item['price'])
@@ -1639,29 +1631,25 @@ def callback(c):
         if cid not in games:
             bot.answer_callback_query(c.id, "No game!", show_alert=True)
             return
-        
-        game = games[cid]
         user = db.get_user(uid)
+
+        # PREMIUM: Hints 50% cheaper!
         cost = 25 if db.is_premium(uid) else HINT_COST
-        
-        # Check balance
+
         if user[7] < cost:
-            bot.answer_callback_query(c.id, f"❌ Need {cost} pts!", show_alert=True)
+            bot.answer_callback_query(c.id, f"Need {cost} pts!", show_alert=True)
             return
-        
-        # Get hidden words
+        game = games[cid]
         hidden = [w for w in game.words if w not in game.found]
         if not hidden:
-            bot.answer_callback_query(c.id, "✅ All found!", show_alert=True)
+            bot.answer_callback_query(c.id, "All found!", show_alert=True)
             return
-        
-        # Deduct points and reveal
-        db.update_user(uid, hintbalance=user[7]-cost)
         reveal = random.choice(hidden)
+        db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
         bot.answer_callback_query(c.id)
         return
-        
+
     if data == "g_score":
         if cid not in games:
             bot.answer_callback_query(c.id, "No game!", show_alert=True)
