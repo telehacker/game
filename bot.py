@@ -952,13 +952,11 @@ def cmd_start(m):
                     success = db.add_referral(referrer_id, uid)
                     if success:
                         db.update_user(uid, referrer_id=referrer_id)
-                        # notify referrer (wrapped in try/except)
                         try:
                             bot.send_message(referrer_id,
                                 f"🎉 +{REFERRAL_BONUS} pts!\n{name} joined using your link!")
                         except Exception as e:
                             logger.error(f"Could not notify referrer {referrer_id}: {e}")
-                        # notify owner about referral
                         notify_owner(f"👥 Referral: {name} (ID: {uid}) was referred by {referrer_id}")
             except Exception as e:
                 logger.debug(f"Invalid referral code: {e}")
@@ -998,7 +996,8 @@ def cmd_start(m):
            f"🌟 <b>Features:</b>\n"
            f"• 6 game modes with neon graphics\n"
            f"• Enhanced scoring with bonuses\n"
-           f"• Achievements & Level system\n           f"• Shop with real money (₹)\n"
+           f"• Achievements & Level system\n"
+           f"• Shop with real money (₹)\n"
            f"• Real money rewards\n\n"
            f"Tap a button to start!")
 
