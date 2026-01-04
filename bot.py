@@ -44,11 +44,64 @@ FIRST_BLOOD = 15
 NORMAL_PTS = 3
 FINISHER = 10
 HINT_COST = 50
-COOLDOWN = 2
+COOLDOWN = 1  # Slower timer! (was 2)
 DAILY_REWARD = 100
 STREAK_BONUS = 20
 REFERRAL_BONUS = 200
 COMBO_BONUS = 5
+
+# ═══════════════════════════════════════════════════════════════════
+# UNIQUE CREATIVE MESSAGES
+# ═══════════════════════════════════════════════════════════════════
+CORRECT_EMOJIS = ['🎯', '💥', '⚡', '🔥', '✨', '💫', '🌟', '⭐', '🎊', '🎉']
+WRONG_EMOJIS = ['😅', '🤔', '😬', '💭', '🎭', '🤷', '😕']
+
+CORRECT_MESSAGES = [
+    "BOOM! 💥 {name} crushed it!",
+    "ON FIRE! 🔥 {name} is unstoppable!",
+    "LEGENDARY! ⚡ {name} found {word}!",
+    "GODLIKE! 🌟 {name} nailed it!",
+    "INSANE! 💫 {name} got {word}!",
+    "SAVAGE! 😎 {name} destroyed that!",
+    "PERFECT! 🎯 {name} is on a roll!",
+    "BEAST MODE! 🦁 {name} found {word}!",
+    "KILLING IT! 💪 {name} dominates!",
+    "ABSOLUTE UNIT! 🔱 {name} conquered {word}!",
+]
+
+WRONG_MESSAGES = [
+    "Oops! 😅 {word} nahi hai list mein!",
+    "Nope! 🤔 {word} galat hai bro!",
+    "Not quite! 😬 Try something else!",
+    "Hmm... 💭 {word}? Nah, not here!",
+    "Nice try! 🎭 But {word} isn't it!",
+    "So close! 🤷 {word} isn't the one!",
+    "Bruh! 😕 {word} doesn't exist!",
+]
+
+ALREADY_FOUND_MESSAGES = [
+    "Déjà vu! 👀 {word} already found!",
+    "Bro... 😅 {word} toh mil chuka!",
+    "Again? 🔁 Someone got {word} already!",
+    "Late ho gaye! ⏰ {word} done!",
+    "Duplicate! 📋 {word} checked off!",
+]
+
+FIRST_BLOOD_MESSAGES = [
+    "⚡ FIRST BLOOD! {name} draws first!",
+    "🩸 OPENING SHOT! {name} strikes!",
+    "💥 FIRST STRIKE! {name} leads!",
+    "🎯 BULLSEYE! {name} goes first!",
+]
+
+COMBO_MESSAGES = [
+    "DOUBLE KILL! 🔥",
+    "TRIPLE KILL! 💥",
+    "ULTRA KILL! ⚡",
+    "RAMPAGE! 🌟",
+    "UNSTOPPABLE! 💫",
+    "GODLIKE! 👑",
+]
 SPEED_BONUS = 5
 BAD_WORDS = {"SEX","PORN","NUDE","XXX","DICK","COCK","PUSSY","FUCK","SHIT","BITCH","ASS","HENTAI","BOOBS"}
 
@@ -398,35 +451,30 @@ def load_words():
 
 load_words()
 
-
 # ═══════════════════════════════════════════════════════════════════
-# MODIFIED IMAGE RENDERER - WHITE BACKGROUND + TRANSPARENT LINE
+# IMAGE RENDERER - THIN LIGHT LINES
 # ═══════════════════════════════════════════════════════════════════
-
 class ImageRenderer:
     @staticmethod
-    def draw_grid(grid: List[List[str]], placements: Dict, found: set, mode="NORMAL", words_left=0):
-        """Draw game grid with WHITE background and TRANSPARENT yellow overlay on found words"""
-
+    def draw_grid(grid: List[List[str]], placements: Dict, found: set,
+                  mode="NORMAL", words_left=0):
         cell = 50
         header = 90
         footer = 70
         pad = 20
-
         rows = len(grid)
         cols = len(grid[0]) if rows else 0
+
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        # WHITE BACKGROUND!
-        img = Image.new('RGB', (w, h), '#FFFFFF')
-        draw = ImageDraw.Draw(img, 'RGBA')  # RGBA mode for transparency!
+        img = Image.new("RGB", (w, h), "#0a1628")
+        draw = ImageDraw.Draw(img)
 
-        # Load fonts
         try:
-            font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
             if not os.path.exists(font_path):
-                font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+                font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
             if not os.path.exists(font_path):
                 raise Exception("Font not found")
             title_font = ImageFont.truetype(font_path, 32)
@@ -437,36 +485,31 @@ class ImageRenderer:
             letter_font = ImageFont.load_default()
             small_font = ImageFont.load_default()
 
-        # ═══════════════════════════════════════════════════════════════
-        # HEADER - Dark Blue
-        # ═══════════════════════════════════════════════════════════════
-        draw.rectangle((0, 0, w, header), fill='#1a2942')
-
-        title = "🎯 WORD GRID - FIND WORDS"
+        # Header
+        draw.rectangle([0, 0, w, header], fill="#1a2942")
+        title = "WORD GRID (FIND WORDS)"
         try:
             bbox = draw.textbbox((0, 0), title, font=title_font)
-            draw.text((w - (bbox[2]-bbox[0])//2, 25), title, fill='#e0e0e0', font=title_font)
+            draw.text(((w - (bbox[2]-bbox[0]))//2, 25), title, fill="#e0e0e0", font=title_font)
         except:
-            draw.text((w//2 - 100, 25), title, fill='#e0e0e0', font=title_font)
+            draw.text((w//2 - 100, 25), title, fill="#e0e0e0", font=title_font)
 
-        mode_text = f"📌 {mode.upper()}"
-        draw.text((pad, header-30), mode_text, fill='#ffa500', font=small_font)
-        draw.text((w-150, header-30), f"Left: {words_left}", fill='#4CAF50', font=small_font)
+        mode_text = f"⚡ {mode.upper()}"
+        draw.text((pad, header-30), mode_text, fill="#ffa500", font=small_font)
+        draw.text((w-150, header-30), f"Left: {words_left}", fill="#4CAF50", font=small_font)
 
         grid_y = header + pad
 
-        # ═══════════════════════════════════════════════════════════════
-        # GRID CELLS - White with Dark Border
-        # ═══════════════════════════════════════════════════════════════
+        # Grid - BRIGHT WHITE LETTERS
         for r in range(rows):
             for c in range(cols):
-                x = pad + c*cell
-                y = grid_y + r*cell
+                x = pad + c * cell
+                y = grid_y + r * cell
 
-                # White cell with dark border
-                draw.rectangle((x, y, x+cell, y+cell), fill='#FFFFFF', outline='#333333', width=2)
+                shadow = 2
+                draw.rectangle([x+shadow, y+shadow, x+cell+shadow, y+cell+shadow], fill="#000000")
+                draw.rectangle([x, y, x+cell, y+cell], fill="#1e3a5f", outline="#3d5a7f", width=1)
 
-                # Letter - BLACK color for visibility on white
                 ch = grid[r][c]
                 try:
                     bbox = draw.textbbox((0, 0), ch, font=letter_font)
@@ -475,60 +518,33 @@ class ImageRenderer:
                 except:
                     tx = x + cell//2 - 8
                     ty = y + cell//2 - 10
+                draw.text((tx, ty), ch, fill="#ffffff", font=letter_font)
 
-                draw.text((tx, ty), ch, fill='#000000', font=letter_font)  # BLACK letters!
-
-        # ═══════════════════════════════════════════════════════════════
-        # TRANSPARENT YELLOW OVERLAY ON FOUND WORDS
-        # ═══════════════════════════════════════════════════════════════
+        # THIN LIGHT YELLOW LINES
         if placements and found:
-            # Create overlay layer
-            overlay = Image.new('RGBA', (w, h), (255, 255, 255, 0))
-            overlay_draw = ImageDraw.Draw(overlay)
-
             for word, coords in placements.items():
                 if word in found and coords:
-                    # Draw transparent yellow overlay on each cell
-                    for (row, col) in coords:
-                        x = pad + col*cell
-                        y = grid_y + row*cell
-                        # Semi-transparent yellow (255, 255, 0, 100 = 40% opacity)
-                        overlay_draw.rectangle(
-                            (x+2, y+2, x+cell-2, y+cell-2), 
-                            fill=(255, 255, 0, 100),  # Yellow with 40% transparency
-                            outline=(255, 200, 0, 180),  # Border slightly less transparent
-                            width=2
-                        )
-
-                    # Draw line connecting first and last letter
                     a, b = coords[0], coords[-1]
                     x1 = pad + a[1]*cell + cell//2
                     y1 = grid_y + a[0]*cell + cell//2
                     x2 = pad + b[1]*cell + cell//2
                     y2 = grid_y + b[0]*cell + cell//2
 
-                    # Thick transparent yellow line
-                    overlay_draw.line([(x1,y1), (x2,y2)], fill=(255, 200, 0, 150), width=4)
+                    draw.line([(x1,y1), (x2,y2)], fill="#ffff99", width=3)
+                    draw.line([(x1,y1), (x2,y2)], fill="#ffeb3b", width=1)
 
-                    # Endpoints
-                    for (px, py) in [(x1,y1), (x2,y2)]:
-                        overlay_draw.ellipse((px-6, py-6, px+6, py+6), fill=(255, 200, 0, 200))
+                    for px, py in [(x1,y1), (x2,y2)]:
+                        draw.ellipse([px-4, py-4, px+4, py+4], fill="#ffeb3b")
 
-            # Composite overlay onto main image
-            img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-            draw = ImageDraw.Draw(img)
+        # Footer
+        draw.rectangle([0, h-footer, w, h], fill="#0d1929")
+        draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
+                 fill="#7f8c8d", font=small_font)
 
-        # ═══════════════════════════════════════════════════════════════
-        # FOOTER
-        # ═══════════════════════════════════════════════════════════════
-        draw.rectangle((0, h-footer, w, h), fill='#f0f0f0')
-        draw.text((w//2 - 100, h-footer+25), "Made by Ruhvaan • Word Vortex v10.5", fill='#666666', font=small_font)
-
-        # Save to BytesIO
         bio = io.BytesIO()
-        img.save(bio, 'PNG', quality=95)
+        img.save(bio, "PNG", quality=95)
         bio.seek(0)
-        bio.name = 'grid.png'
+        bio.name = "grid.png"
         return bio
 
 # ═══════════════════════════════════════════════════════════════════
