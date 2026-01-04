@@ -28,11 +28,11 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
-START_IMG_URL = "https://i.imgur.com/8XjQk9p.jpg"
+START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -415,15 +415,8 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        # NEW PATTERN BACKGROUND
-        img = Image.new("RGB", (w, h), "#0a0e27")
+        img = Image.new("RGB", (w, h), "#0a1628")
         draw = ImageDraw.Draw(img)
-        for x in range(0, w, 40):
-            draw.line([(x, 0), (x, h)], fill=(30, 40, 60), width=1)
-        for y in range(0, h, 40):
-            draw.line([(0, y), (w, y)], fill=(30, 40, 60), width=1)
-        for i_line in range(-h, w, 80):
-            draw.line([(i_line, 0), (i_line+h, h)], fill=(20, 30, 50), width=1)
 
         try:
             font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -729,7 +722,6 @@ def handle_guess(msg):
             bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
 
     bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
-    update_game(cid)
     bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
 
     update_game(cid)
@@ -745,18 +737,16 @@ def handle_guess(msg):
 # ═══════════════════════════════════════════════════════════════════
 # CHANNEL JOIN CHECK
 # ═══════════════════════════════════════════════════════════════════
-def is_subscribed(uid):
-    if not FORCE_JOIN:
-        return True
-    if OWNER_ID and uid == OWNER_ID:
-        return True
+def is_subscribed(user_id: int) -> bool:
     if not CHANNEL_USERNAME:
         return True
-    try:
-        member = bot.get_chat_member(CHANNEL_USERNAME, uid)
-        return member.status in ['creator', 'administrator', 'member']
-    except:
+    if OWNER_ID and user_id == OWNER_ID:
         return True
+    try:
+        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
+        return status in ("creator", "administrator", "member")
+    except:
+        return False
 
 def must_join_menu():
     kb = InlineKeyboardMarkup()
@@ -836,10 +826,9 @@ def shop_menu():
 # ═══════════════════════════════════════════════════════════════════
 @bot.message_handler(commands=['start','help'])
 def cmd_start(m):
-    uid = m.from_user.id
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
-
+    uid = m.from_user.id
 
     if not is_subscribed(uid):
         txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
@@ -1300,7 +1289,6 @@ def callback(c):
     uid = c.from_user.id
     data = c.data
 
-
     # VERIFY - FIXED NO LOOP
     if data == "verify":
         if is_subscribed(uid):
@@ -1629,13 +1617,6 @@ def callback(c):
         if not hidden:
             bot.answer_callback_query(c.id, "All found!", show_alert=True)
             return
-        user = db.get_user(uid)
-        cost = 25 if db.is_premium(uid) else HINT_COST
-        if user[7] < cost:
-            bot.answer_callback_query(c.id, f"❌ Need {cost} pts!", show_alert=True)
-            return
-        db.update_user(uid, hintbalance=user[7]-cost)
-
         reveal = random.choice(hidden)
         db.update_user(uid, hint_balance=user[7]-cost)
         bot.send_message(cid, f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)")
