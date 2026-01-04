@@ -1651,7 +1651,7 @@ def callback(c):
         txt = (f"💳 <b>PURCHASE: {item['name']}</b>\n\n"
                f"Price: <b>₹{item['price']}</b>\n\n"
                f"📱 Send payment to:\n"
-               f"<b>UPI:</b> <code>yourowner@upi</code>\n\n"
+               f"<b>UPI:</b> <code>ruhvaan@slc</code>\n\n"
                f"After payment, send screenshot to @{SUPPORT_GROUP.split('/')[-1]}")
 
         db.add_purchase(uid, item['type'], item['price'])
