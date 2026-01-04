@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════╗
+╔═════════════════════════════════════════════════════════════════��[...]
 ║  WORD VORTEX ULTIMATE v10.5 - FINAL FIXED VERSION               ║
 ║  ✅ Verify Loop FIXED                                            ║
 ║  ✅ Premium Admin Commands Added                                 ║
 ║  ✅ Shop = Real Money (₹)                                        ║
 ║  ✅ Thin/Light Lines                                             ║
 ║  ✅ All Features Working                                         ║
-╚══════════════════════════════════════════════════════════════════╝
+╚═════════════════════════════════════════════════════════════════��[...]
 """
 
 import os, sys, time, html, io, random, logging, sqlite3, json, threading
@@ -19,9 +19,9 @@ import telebot
 from flask import Flask
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # CONFIG
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "8208557623:AAHMVlODlQMpaoQ-PRFzVXOue-ousiWhu_Y")
 if not TOKEN:
     print("❌ TELEGRAM_TOKEN not set")
@@ -44,15 +44,15 @@ FIRST_BLOOD = 15
 NORMAL_PTS = 3
 FINISHER = 10
 HINT_COST = 50
-COOLDOWN = 1  # Slower timer!
+COOLDOWN = 1  # Slower timer! (was 2)
 DAILY_REWARD = 100
 STREAK_BONUS = 20
 REFERRAL_BONUS = 200
 COMBO_BONUS = 5
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # UNIQUE CREATIVE MESSAGES
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 CORRECT_EMOJIS = ['🎯', '💥', '⚡', '🔥', '✨', '💫', '🌟', '⭐', '🎊', '🎉']
 WRONG_EMOJIS = ['😅', '🤔', '😬', '💭', '🎭', '🤷', '😕']
 
@@ -102,7 +102,6 @@ COMBO_MESSAGES = [
     "UNSTOPPABLE! 💫",
     "GODLIKE! 👑",
 ]
-
 SPEED_BONUS = 5
 BAD_WORDS = {"SEX","PORN","NUDE","XXX","DICK","COCK","PUSSY","FUCK","SHIT","BITCH","ASS","HENTAI","BOOBS"}
 
@@ -132,9 +131,9 @@ SHOP_ITEMS = {
 
 user_states = {}
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # DATABASE
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 class Database:
     def __init__(self):
         self.db = "word_vortex_v105_final.db"
@@ -229,10 +228,25 @@ class Database:
         conn.close()
 
     def add_score(self, user_id: int, points: int):
+        """Legacy: increase both total_score and hint_balance (keeps older behavior)."""
         conn = self._conn()
         c = conn.cursor()
         c.execute("UPDATE users SET total_score = total_score + ?, hint_balance = hint_balance + ? WHERE user_id=?", 
                  (points, points, user_id))
+        conn.commit()
+        conn.close()
+
+    def add_score_only(self, user_id: int, points: int):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("UPDATE users SET total_score = total_score + ? WHERE user_id=?", (points, user_id))
+        conn.commit()
+        conn.close()
+
+    def add_hint_balance(self, user_id: int, amount: int):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("UPDATE users SET hint_balance = hint_balance + ? WHERE user_id=?", (amount, user_id))
         conn.commit()
         conn.close()
 
@@ -259,7 +273,9 @@ class Database:
 
     def add_achievement(self, user_id: int, ach_id: str) -> bool:
         user = self.get_user(user_id)
-        achievements = json.loads(user[16] if user[16] else "[]")
+        # achievements stored at index 17 (0-based)
+        achievements_json = user[17] if user and len(user) > 17 and user[17] else "[]"
+        achievements = json.loads(achievements_json)
         if ach_id in achievements:
             return False
         achievements.append(ach_id)
@@ -333,6 +349,13 @@ class Database:
         conn = self._conn()
         c = conn.cursor()
         c.execute("UPDATE reviews SET approved=1 WHERE review_id=?", (review_id,))
+        conn.commit()
+        conn.close()
+
+    def delete_review(self, review_id: int):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("DELETE FROM reviews WHERE review_id=?", (review_id,))
         conn.commit()
         conn.close()
 
@@ -420,9 +443,9 @@ class Database:
 
 db = Database()
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # NOTIFICATION SYSTEM
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 def notify_owner(message: str):
     if NOTIFICATION_GROUP:
         try:
@@ -430,9 +453,9 @@ def notify_owner(message: str):
         except Exception as e:
             logger.error(f"Failed to send notification: {e}")
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # WORD SOURCE
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 ALL_WORDS: List[str] = []
 
 def load_words():
@@ -452,167 +475,128 @@ def load_words():
 
 load_words()
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # IMAGE RENDERER - THIN LIGHT LINES
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 class ImageRenderer:
     @staticmethod
-    def draw_grid(grid: List[List[str]], placements: Dict, found: set, mode="NORMAL", words_left=0, is_premium=False):
-        """Ultra clean white design with LARGE clear letters + PREMIUM BADGE"""
-
-        cell = 60  # BIGGER cells!
-        header = 80
-        footer = 60
-        pad = 25
-
+    def draw_grid(grid: List[List[str]], placements: Dict, found: Dict[str,int],
+                  mode="NORMAL", words_left=0):
+        """
+        found: Dict[word -> finder_user_id]
+        Lines for found words are drawn. If finder is premium, line color becomes golden.
+        """
+        cell = 50
+        header = 90
+        footer = 70
+        pad = 20
         rows = len(grid)
         cols = len(grid[0]) if rows else 0
+
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        # PURE WHITE BACKGROUND
-        img = Image.new('RGB', (w, h), '#FFFFFF')
-        draw = ImageDraw.Draw(img, 'RGBA')
-
-        # Fonts - LARGER!
+        # Header color different for premium / normal (if any premium found -> golden header)
+        any_premium_found = False
         try:
-            font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+            for word, finder in (found or {}).items():
+                if finder and db.is_premium(finder):
+                    any_premium_found = True
+                    break
+        except:
+            any_premium_found = False
+
+        bg = "#0a1628"
+        img = Image.new("RGB", (w, h), bg)
+        draw = ImageDraw.Draw(img)
+
+        try:
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
             if not os.path.exists(font_path):
-                font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
-            title_font = ImageFont.truetype(font_path, 28)
-            letter_font = ImageFont.truetype(font_path, 32)  # BIG letters!
-            small_font = ImageFont.truetype(font_path, 14)
-            badge_font = ImageFont.truetype(font_path, 14)
+                font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            if not os.path.exists(font_path):
+                raise Exception("Font not found")
+            title_font = ImageFont.truetype(font_path, 32)
+            letter_font = ImageFont.truetype(font_path, 28)
+            small_font = ImageFont.truetype(font_path, 16)
         except:
             title_font = ImageFont.load_default()
             letter_font = ImageFont.load_default()
             small_font = ImageFont.load_default()
-            badge_font = ImageFont.load_default()
 
-        # Header - Title
-        title = "WORD VORTEX"
+        # Header
+        header_fill = "#2b2b2b" if not any_premium_found else "#3b2b00"
+        draw.rectangle([0, 0, w, header], fill=header_fill)
+        title = "WORD GRID (FIND WORDS)"
         try:
             bbox = draw.textbbox((0, 0), title, font=title_font)
-            tx = (w - (bbox[2] - bbox[0])) // 2
-            draw.text((tx, 20), title, fill='#2C3E50', font=title_font)
+            draw.text(((w - (bbox[2]-bbox[0]))//2, 25), title, fill="#e0e0e0", font=title_font)
         except:
-            draw.text((w//2 - 80, 20), title, fill='#2C3E50', font=title_font)
+            draw.text((w//2 - 100, 25), title, fill="#e0e0e0", font=title_font)
 
-        # 👑 PREMIUM BADGE (Top right)
-        if is_premium:
-            badge_text = "👑 PREMIUM"
-            try:
-                bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
-                badge_w = (bbox[2] - bbox[0]) + 16
-                badge_h = (bbox[3] - bbox[1]) + 8
-                badge_x = w - badge_w - pad - 5
-                badge_y = 18
-
-                # Gold background rectangle
-                draw.rounded_rectangle(
-                    [(badge_x, badge_y), (badge_x + badge_w, badge_y + badge_h)],
-                    radius=5,
-                    fill='#F39C12',
-                    outline='#D68910',
-                    width=2
-                )
-
-                # White text
-                text_x = badge_x + 8
-                text_y = badge_y + 4
-                draw.text((text_x, text_y), badge_text, fill='#FFFFFF', font=badge_font)
-            except:
-                draw.text((w - 130, 22), badge_text, fill='#F39C12', font=small_font)
-
-        # Thin line below header
-        draw.line([(pad, header-5), (w-pad, header-5)], fill='#E0E0E0', width=1)
+        mode_text = f"⚡ {mode.upper()}"
+        draw.text((pad, header-30), mode_text, fill="#ffa500" if not any_premium_found else "#ffd700", font=small_font)
+        draw.text((w-150, header-30), f"Left: {words_left}", fill="#4CAF50", font=small_font)
 
         grid_y = header + pad
 
-        # Grid cells - Ultra Clean
+        # Grid - BRIGHT WHITE LETTERS
         for r in range(rows):
             for c in range(cols):
-                x = pad + c*cell
-                y = grid_y + r*cell
+                x = pad + c * cell
+                y = grid_y + r * cell
 
-                # Very thin light gray border
-                draw.rectangle((x, y, x+cell, y+cell), 
-                              fill='#FFFFFF', 
-                              outline='#D5D8DC',
-                              width=1)
+                shadow = 2
+                draw.rectangle([x+shadow, y+shadow, x+cell+shadow, y+cell+shadow], fill="#000000")
+                draw.rectangle([x, y, x+cell, y+cell], fill="#1e3a5f", outline="#3d5a7f", width=1)
 
-                # Letter - DARK GRAY (visible)
                 ch = grid[r][c]
                 try:
                     bbox = draw.textbbox((0, 0), ch, font=letter_font)
                     tx = x + (cell - (bbox[2]-bbox[0]))//2
                     ty = y + (cell - (bbox[3]-bbox[1]))//2
                 except:
-                    tx = x + cell//2 - 10
-                    ty = y + cell//2 - 12
+                    tx = x + cell//2 - 8
+                    ty = y + cell//2 - 10
+                draw.text((tx, ty), ch, fill="#ffffff", font=letter_font)
 
-                draw.text((tx, ty), ch, fill='#34495E', font=letter_font)
-
-        # Found words - TRANSPARENT OVERLAY
+        # THIN LIGHT LINES (draw for found words)
         if placements and found:
-            overlay = Image.new('RGBA', (w, h), (255, 255, 255, 0))
-            overlay_draw = ImageDraw.Draw(overlay)
-
             for word, coords in placements.items():
                 if word in found and coords:
-                    # Light yellow overlay on cells
-                    for (row, col) in coords:
-                        x = pad + col*cell
-                        y = grid_y + row*cell
-                        overlay_draw.rectangle(
-                            (x+1, y+1, x+cell-1, y+cell-1), 
-                            fill=(255, 235, 59, 80),  # 30% transparent
-                            outline=(255, 193, 7, 120),
-                            width=2
-                        )
+                    finder = found.get(word)
+                    is_prem = db.is_premium(finder) if finder else False
 
-                    # Clean line connecting start to end
                     a, b = coords[0], coords[-1]
                     x1 = pad + a[1]*cell + cell//2
                     y1 = grid_y + a[0]*cell + cell//2
                     x2 = pad + b[1]*cell + cell//2
                     y2 = grid_y + b[0]*cell + cell//2
 
-                    overlay_draw.line([(x1,y1), (x2,y2)], 
-                                     fill=(255, 193, 7, 180), 
-                                     width=3)
+                    if is_prem:
+                        draw.line([(x1,y1), (x2,y2)], fill="#ffd700", width=4)
+                        draw.line([(x1,y1), (x2,y2)], fill="#fff2a6", width=1)
+                    else:
+                        draw.line([(x1,y1), (x2,y2)], fill="#ffff99", width=3)
+                        draw.line([(x1,y1), (x2,y2)], fill="#ffeb3b", width=1)
 
-                    # Small circles at endpoints
-                    for (px, py) in [(x1,y1), (x2,y2)]:
-                        overlay_draw.ellipse((px-5, py-5, px+5, py+5), 
-                                           fill=(255, 193, 7, 200))
+                    for px, py in [(x1,y1), (x2,y2)]:
+                        draw.ellipse([px-5, py-5, px+5, py+5], fill="#ffeb3b" if not is_prem else "#ffd700")
 
-            img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-            draw = ImageDraw.Draw(img)
+        # Footer
+        draw.rectangle([0, h-footer, w, h], fill="#0d1929")
+        draw.text((w//2 - 100, h-footer+25), "Made by @Ruhvaan • Word Vortex v10.5",
+                 fill="#7f8c8d", font=small_font)
 
-        # Footer - Different for premium
-        if is_premium:
-            footer_text = "Made by @Ruhvaan • Premium Member ✨"
-        else:
-            footer_text = "Made by @Ruhvaan • Word Vortex v11.0"
-
-        try:
-            bbox = draw.textbbox((0, 0), footer_text, font=small_font)
-            tx = (w - (bbox[2] - bbox[0])) // 2
-            draw.text((tx, h-40), footer_text, fill='#95A5A6', font=small_font)
-        except:
-            draw.text((w//2 - 120, h-40), footer_text, fill='#95A5A6', font=small_font)
-
-        # Save
         bio = io.BytesIO()
-        img.save(bio, 'PNG', quality=95)
+        img.save(bio, "PNG", quality=95)
         bio.seek(0)
-        bio.name = 'grid.png'
+        bio.name = "grid.png"
         return bio
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # GAME SESSION
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 games = {}
 
 class GameSession:
@@ -625,8 +609,8 @@ class GameSession:
         self.start_time = time.time()
         self.grid: List[List[str]] = []
         self.placements: Dict[str, List[Tuple[int,int]]] = {}
-        self.words: List[str] = []
-        self.found: set = set()
+        # found: map word -> finder_user_id (so we can show premium-specific visuals)
+        self.found: Dict[str, int] = {}
         self.players: Dict[int, int] = {}
         self.last_guess: Dict[int, float] = {}
         self.last_find_time: Dict[int, float] = {}
@@ -759,7 +743,7 @@ def update_game(chat_id):
                     message_id=session.message_id,
                     reply_markup=kb
                 )
-            except:
+            except Exception:
                 msg = bot.send_photo(chat_id, img, caption=caption, reply_markup=kb)
                 session.message_id = msg.message_id
         else:
@@ -770,138 +754,100 @@ def update_game(chat_id):
         logger.exception("Update failed")
 
 def handle_guess(msg):
-    """Handle word guess with UNIQUE creative replies - BOT ALWAYS REPLIES!"""
     cid = msg.chat.id
-    uid = msg.from_user.id
-
     if cid not in games:
-        bot.reply_to(msg, "❌ No active game! Use /new to start!")
         return
 
     session = games[cid]
+    uid = msg.from_user.id
     name = msg.from_user.first_name or "Player"
     word = (msg.text or "").strip().upper()
 
     if not word:
-        bot.reply_to(msg, "❓ Bro... send a word first! 🤨")
         return
 
-    # Check cooldown
+    # PREMIUM: No cooldown!
     cooldown = 0 if db.is_premium(uid) else COOLDOWN
     last = session.last_guess.get(uid, 0)
-    if time.time() - last < cooldown:
-        bot.reply_to(msg, f"⏰ Chill! Wait {cooldown}s! Take a breath 😌")
-        return
 
+    if time.time() - last < cooldown:
+        bot.reply_to(msg, f"⏳ Wait {cooldown}s")
+        return
     session.last_guess[uid] = time.time()
 
-    # ❌ WRONG WORD - Creative reply
     if word not in session.words:
-        wrong_msg = random.choice(WRONG_MESSAGES).format(word=word)
-        bot.reply_to(msg, f"{random.choice(WRONG_EMOJIS)} {wrong_msg}")
+        bot.reply_to(msg, f"❌ '{word}' not in list!")
         session.combo_count[uid] = 0
         return
 
-    # ✅ ALREADY FOUND - Creative reply
     if word in session.found:
-        already_msg = random.choice(ALREADY_FOUND_MESSAGES).format(word=word)
-        bot.reply_to(msg, f"🔁 {already_msg}")
+        bot.reply_to(msg, f"✅ Already found!")
         return
 
-    # 🎯 CORRECT WORD!
-    session.found.add(word)
+    # mark who found which word
+    session.found[word] = uid
 
-    # Calculate points
-    pts = NORMAL_PTS
+    pts = 0
     bonuses = []
-    special_message = ""
 
-    # First blood
     if len(session.found) == 1:
-        pts = FIRST_BLOOD
-        special_message = random.choice(FIRST_BLOOD_MESSAGES).format(name=name)
-        bonuses.append("🩸 FIRST BLOOD")
-
-    # Finisher
+        pts += FIRST_BLOOD
+        bonuses.append("🥇FIRST BLOOD")
     elif len(session.found) == len(session.words):
-        pts = FINISHER
-        special_message = f"🏁 FINISHER! {name} ends it!"
-        bonuses.append("🏁 FINISHER")
+        pts += FINISHER
+        bonuses.append("🏆FINISHER")
+    else:
+        pts += NORMAL_PTS
 
-    # Speed bonus
     find_time = time.time()
     last_find = session.last_find_time.get(uid, session.start_time)
     if find_time - last_find < 10:
         pts += SPEED_BONUS
-        bonuses.append("⚡ SPEED DEMON")
+        bonuses.append("⚡SPEED +5")
     session.last_find_time[uid] = find_time
 
-    # Combo bonus - UNIQUE messages
     session.combo_count[uid] = session.combo_count.get(uid, 0) + 1
-    combo = session.combo_count[uid]
-    if combo >= 2:
-        pts += COMBO_BONUS * (combo - 1)
-        if combo - 2 < len(COMBO_MESSAGES):
-            bonuses.append(COMBO_MESSAGES[combo-2])
-        else:
-            bonuses.append(f"🔥 {combo}x COMBO!")
+    if session.combo_count[uid] >= 2:
+        pts += COMBO_BONUS
+        bonuses.append(f"🔥COMBO x{session.combo_count[uid]}")
 
-    # Update score
     session.players[uid] = session.players.get(uid, 0) + pts
+    # keep old behavior for "add_score" when appropriate; awarding points to total_score AND hint_balance
     db.add_score(uid, pts)
     db.add_xp(uid, pts * 10)
+
     user = db.get_user(uid)
-    db.update_user(uid, wordsfound=user[17]+1)
+    # words_found column index is 18 (0-based), handle safely
+    try:
+        current_words_found = user[18] if len(user) > 18 and user[18] is not None else 0
+    except:
+        current_words_found = 0
+    db.update_user(uid, words_found=current_words_found+1)
 
-    # Check achievements
+    # Award first_win achievement if this was the user's first win (wins == 0) and game finished
     if user[5] == 0 and len(session.found) == len(session.words):
-        if db.add_achievement(uid, 'firstwin'):
-            bot.send_message(cid, 
-                f"🏆 <b>ACHIEVEMENT UNLOCKED!</b>\n"
-                f"👑 {ACHIEVEMENTS['firstwin']['name']}\n"
-                f"💰 +{ACHIEVEMENTS['firstwin']['reward']} bonus!")
+        try:
+            if db.add_achievement(uid, "first_win"):
+                bot.send_message(cid, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['first_win']['icon']} {ACHIEVEMENTS['first_win']['name']}")
+        except Exception as e:
+            logger.exception("Error awarding achievement")
 
-    # Build creative reply
-    if special_message:
-        reply = f"{special_message}\n"
-        reply += f"<code>{word}</code> found!\n"
-        reply += f"💰 <b>+{pts} pts</b>"
-    else:
-        correct_msg = random.choice(CORRECT_MESSAGES).format(
-            name=name, 
-            word=f"<code>{word}</code>"
-        )
-        emoji = random.choice(CORRECT_EMOJIS)
-        reply = f"{emoji} {correct_msg}\n"
-        reply += f"💰 <b>+{pts} pts</b>"
+    bonus_text = " • " + " • ".join(bonuses) if bonuses else ""
+    bot.send_message(cid, f"🎉 <b>{html.escape(name)}</b> found <code>{word}</code>!\n+{pts} pts{bonus_text}")
 
-    if bonuses:
-        reply += f"\n✨ {' • '.join(bonuses)}"
-
-    reply += f"\n🏆 Total: <b>{session.players[uid]} pts</b>"
-
-    # ⚡ SEND THE CREATIVE MESSAGE (KEY!)
-    bot.send_message(cid, reply)
-
-    # Update image with yellow line
     update_game(cid)
 
-    # Check if game complete
     if len(session.found) == len(session.words):
         winner = max(session.players.items(), key=lambda x: x[1])
         winner_user = db.get_user(winner[0])
         db.update_user(winner[0], wins=winner_user[5]+1)
 
-        victory_msg = f"🎊 <b>GAME COMPLETE!</b> 🎊\n\n"
-        victory_msg += f"👑 <b>WINNER: {html.escape(winner_user[1])}</b>\n"
-        victory_msg += f"💰 Score: <b>{winner[1]} pts</b>\n"
-        victory_msg += f"🔥 <b>ABSOLUTE LEGEND!</b>"
-
-        bot.send_message(cid, victory_msg)
+        bot.send_message(cid, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts")
         del games[cid]
 
-
-
+# ══════════════════════════════════════════════════════════════════[...]
+# CHANNEL JOIN CHECK
+# ══════════════════════════════════════════════════════════════════[...]
 def is_subscribed(user_id: int) -> bool:
     if not CHANNEL_USERNAME:
         return True
@@ -920,9 +866,9 @@ def must_join_menu():
     kb.add(InlineKeyboardButton("✅ Verify Membership", callback_data="verify"))
     return kb
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # MENUS
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 def main_menu():
     kb = InlineKeyboardMarkup(row_width=2)
 
@@ -986,14 +932,36 @@ def shop_menu():
     kb.add(InlineKeyboardButton("« Back", callback_data="back_main"))
     return kb
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # COMMANDS
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 @bot.message_handler(commands=['start','help'])
 def cmd_start(m):
     name = m.from_user.first_name or "Player"
     username = m.from_user.username or ""
     uid = m.from_user.id
+
+    # If start has referral code: /start ref<id>
+    parts = m.text.split() if m.text else []
+    if len(parts) > 1:
+        ref_code = parts[1]
+        if ref_code.startswith('ref'):
+            try:
+                referrer_id = int(ref_code[3:])
+                if referrer_id != uid:
+                    success = db.add_referral(referrer_id, uid)
+                    if success:
+                        db.update_user(uid, referrer_id=referrer_id)
+                        # notify referrer (wrapped in try/except)
+                        try:
+                            bot.send_message(referrer_id,
+                                f"🎉 +{REFERRAL_BONUS} pts!\n{name} joined using your link!")
+                        except Exception as e:
+                            logger.error(f"Could not notify referrer {referrer_id}: {e}")
+                        # notify owner about referral
+                        notify_owner(f"👥 Referral: {name} (ID: {uid}) was referred by {referrer_id}")
+            except Exception as e:
+                logger.debug(f"Invalid referral code: {e}")
 
     if not is_subscribed(uid):
         txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
@@ -1006,23 +974,6 @@ def cmd_start(m):
         except:
             bot.send_message(m.chat.id, txt, reply_markup=must_join_menu())
         return
-
-    if ' ' in m.text:
-        ref_code = m.text.split()[1]
-        if ref_code.startswith('ref'):
-            try:
-                referrer_id = int(ref_code[3:])
-                if referrer_id != uid:
-                    success = db.add_referral(referrer_id, uid)
-                    if success:
-                        db.update_user(uid, referrer_id=referrer_id)
-                        try:
-                            bot.send_message(referrer_id,
-                                f"🎉 +{REFERRAL_BONUS} pts!\n{name} joined using your link!")
-                        except:
-                            pass
-            except:
-                pass
 
     db.get_user(uid, name, username)
 
@@ -1047,8 +998,7 @@ def cmd_start(m):
            f"🌟 <b>Features:</b>\n"
            f"• 6 game modes with neon graphics\n"
            f"• Enhanced scoring with bonuses\n"
-           f"• Achievements & Level system\n"
-           f"• Shop with real money (₹)\n"
+           f"• Achievements & Level system\n           f"• Shop with real money (₹)\n"
            f"• Real money rewards\n\n"
            f"Tap a button to start!")
 
@@ -1107,7 +1057,7 @@ def cmd_stats(m):
     xp_needed = user[9] * 1000
     xp_progress = (user[10] / xp_needed * 100) if xp_needed > 0 else 0
 
-    premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else ""
+    premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
     txt = (f"👤 <b>PROFILE</b>\n\n"
            f"Name: {html.escape(user[1])}{premium_badge}\n"
@@ -1116,7 +1066,7 @@ def cmd_stats(m):
            f"Score: {user[6]} pts\n"
            f"Balance: {user[7]} pts\n"
            f"Games: {user[4]} • Wins: {user[5]}\n"
-           f"Words Found: {user[17]}\n"
+           f"Words Found: {user[18]}\n"
            f"Streak: {user[11]} days 🔥")
     bot.reply_to(m, txt)
 
@@ -1158,9 +1108,9 @@ def cmd_referral(m):
     kb.add(InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={ref_link}"))
     bot.reply_to(m, txt, reply_markup=kb)
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # ADMIN COMMANDS
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 @bot.message_handler(commands=['addadmin'])
 def cmd_addadmin(m):
     if not (OWNER_ID and m.from_user.id == OWNER_ID):
@@ -1178,23 +1128,73 @@ def cmd_addadmin(m):
 
 @bot.message_handler(commands=['addpoints'])
 def cmd_addpoints(m):
+    """
+    NOTE: changed behavior per request:
+    /addpoints <user_id> <points>  -> Adds points to user's hint balance (not total_score).
+    Use /addscore to add to total_score instead.
+    """
     if not db.is_admin(m.from_user.id):
         return
     args = m.text.split()
     if len(args) < 3:
-        bot.reply_to(m, "Usage: /addpoints <user_id> <points>")
+        bot.reply_to(m, "Usage: /addpoints <user_id> <points>  (adds to hint balance)")
         return
     try:
         user_id = int(args[1])
         points = int(args[2])
-        db.add_score(user_id, points)
-        bot.reply_to(m, f"✅ Added {points} points to user {user_id}")
+        db.add_hint_balance(user_id, points)
+        bot.reply_to(m, f"✅ Added {points} points to hint balance of user {user_id}")
         try:
-            bot.send_message(user_id, f"🎁 You received {points} points from admin!")
+            bot.send_message(user_id, f"🎁 Admin added +{points} pts to your hint balance!")
         except:
             pass
-    except:
-        bot.reply_to(m, "Invalid input")
+    except Exception as e:
+        bot.reply_to(m, f"Invalid input: {e}")
+
+@bot.message_handler(commands=['addscore'])
+def cmd_addscore(m):
+    """Add points to user's total score only."""
+    if not db.is_admin(m.from_user.id):
+        return
+    args = m.text.split()
+    if len(args) < 3:
+        bot.reply_to(m, "Usage: /addscore <user_id> <points>  (adds to total_score)")
+        return
+    try:
+        user_id = int(args[1])
+        points = int(args[2])
+        db.add_score_only(user_id, points)
+        bot.reply_to(m, f"✅ Added {points} points to total_score of user {user_id}")
+        try:
+            bot.send_message(user_id, f"🎁 Admin added +{points} pts to your score!")
+        except:
+            pass
+    except Exception as e:
+        bot.reply_to(m, f"Invalid input: {e}")
+
+@bot.message_handler(commands=['givehints'])
+def cmd_givehints(m):
+    # Only OWNER or admins can run
+    if not db.is_admin(m.from_user.id) and not (OWNER_ID and m.from_user.id == OWNER_ID):
+        return
+    args = m.text.split()
+    if len(args) < 3:
+        bot.reply_to(m, "Usage: /givehints <user_id> <amount>\nExample: /givehints 123456789 50")
+        return
+    try:
+        user_id = int(args[1])
+        amount = int(args[2])
+        if amount <= 0:
+            bot.reply_to(m, "Amount must be positive.")
+            return
+        db.add_hint_balance(user_id, amount)
+        bot.reply_to(m, f"✅ Added {amount} pts to hint balance of user {user_id}")
+        try:
+            bot.send_message(user_id, f"🎁 Admin added +{amount} pts to your hint balance!")
+        except:
+            pass
+    except Exception as e:
+        bot.reply_to(m, f"Invalid input: {e}")
 
 @bot.message_handler(commands=['broadcast'])
 def cmd_broadcast(m):
@@ -1216,9 +1216,9 @@ def cmd_broadcast(m):
             fail += 1
     bot.reply_to(m, f"📢 Broadcast complete!\nSuccess: {success}\nFailed: {fail}")
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # PREMIUM ADMIN COMMANDS - NEW
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 @bot.message_handler(commands=['givepremium'])
 def cmd_givepremium(m):
     """Owner gives premium to user"""
@@ -1320,10 +1320,11 @@ def cmd_listreviews(m):
         bot.reply_to(m, "No reviews yet!")
         return
     txt = "📝 <b>ALL REVIEWS</b>\n\n"
-    for r in reviews[:10]:
-        status = "✅" if r[5] else "⏳"
-        txt += f"{status} ID:{r[0]} | {r[2]} | ⭐{r[3]}\n{r[4][:50]}...\n\n"
-    txt += "Use /approvereview <id> to approve"
+    for r in reviews[:50]:
+        # reviews table: (review_id, user_id, username, text, rating, created_at, approved)
+        status = "✅" if r[6] else "⏳"
+        txt += f"{status} ID:{r[0]} | {r[2]} | ⭐{r[4]}\n{(r[3] or '')[:240]}...\n\n"
+    txt += "Use /approvereview <id> to approve or /delreview <id> to delete"
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['approvereview'])
@@ -1338,6 +1339,21 @@ def cmd_approvereview(m):
         review_id = int(args[1])
         db.approve_review(review_id)
         bot.reply_to(m, f"✅ Approved review {review_id}")
+    except:
+        bot.reply_to(m, "Invalid ID")
+
+@bot.message_handler(commands=['delreview'])
+def cmd_delreview(m):
+    if not db.is_admin(m.from_user.id):
+        return
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /delreview <review_id>")
+        return
+    try:
+        review_id = int(args[1])
+        db.delete_review(review_id)
+        bot.reply_to(m, f"✅ Deleted review {review_id}")
     except:
         bot.reply_to(m, "Invalid ID")
 
@@ -1370,9 +1386,9 @@ def cmd_redeempay(m):
     except:
         bot.reply_to(m, "Invalid ID")
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # TEXT HANDLERS
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 @bot.message_handler(func=lambda m: m.from_user.id in user_states and m.text and not m.text.startswith('/'))
 def handle_state(m):
     uid = m.from_user.id
@@ -1392,20 +1408,27 @@ def handle_state(m):
             bot.reply_to(m, "❌ Please send rating 1-5")
 
     elif state['type'] == 'review_text':
-        text = m.text
+        text = m.text or ""
         rating = state['rating']
+        flagged = any(bad in text.upper() for bad in BAD_WORDS)
+
         db.add_review(uid, m.from_user.first_name or "User", text, rating)
         del user_states[uid]
 
+        # Notify owner always
         notify_owner(
             f"⭐ <b>NEW REVIEW</b>\n\n"
             f"User: {html.escape(m.from_user.first_name or 'User')}\n"
             f"Rating: {'⭐' * rating}\n"
             f"Review: {html.escape(text)}\n\n"
-            f"Use /approvereview to approve"
+            f"Use /approvereview or /delreview to manage"
         )
 
-        bot.reply_to(m, "⭐ Thank you for your review! Owner will see it.")
+        if flagged:
+            # Inform user that their review is under moderation (and not publicly shown)
+            bot.reply_to(m, "⚠️ Your review contains words that may violate rules and is under moderation. Owner will review it.")
+        else:
+            bot.reply_to(m, "⭐ Thank you for your review! It will be shown after approval.")
 
     elif state['type'] == 'redeem_points':
         try:
@@ -1445,9 +1468,19 @@ def handle_state(m):
 
         bot.reply_to(m, f"✅ Redeem request submitted!\n\nPoints: {points}\nAmount: ₹{points//10}\nUPI: {upi}\n\nOwner will process within 24-48 hours.")
 
-# ═══════════════════════════════════════════════════════════════════
-# CALLBACKS - FIXED VERIFY LOOP
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
+# NEW: ForceReply reply handler for guesses (RELIABLE across group/pm)
+# We stopped using register_next_step_handler() as it was not reliable in group callbacks.
+@bot.message_handler(func=lambda m: (m.reply_to_message and m.reply_to_message.text and "Type the word you found" in m.reply_to_message.text) and m.text and not m.text.startswith('/'))
+def guess_reply_handler(m):
+    try:
+        handle_guess(m)
+    except Exception as e:
+        logger.exception("Error handling guess reply")
+
+# ══════════════════════════════════════════════════════════════════[...]
+# CALLBACKS - FIXED VERIFY LOOP + review viewing
+# ══════════════════════════════════════════════════════════════════[...]
 @bot.callback_query_handler(func=lambda c: True)
 def callback(c):
     cid = c.message.chat.id
@@ -1499,7 +1532,7 @@ def callback(c):
 
     if data == "play":
         try:
-            bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=game_modes_menu())
+            bot.edit_message_reply_markup(chat_id=cid, message_id=c.message.message_id, reply_markup=game_modes_menu())
             bot.answer_callback_query(c.id)
         except:
             bot.send_message(uid, "🎮 Select mode:", reply_markup=game_modes_menu())
@@ -1531,7 +1564,7 @@ def callback(c):
 
     if data == "back_main":
         try:
-            bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_menu())
+            bot.edit_message_reply_markup(chat_id=cid, message_id=c.message.message_id, reply_markup=main_menu())
             bot.answer_callback_query(c.id)
         except:
             pass
@@ -1553,7 +1586,7 @@ def callback(c):
 
     if data == "profile":
         user = db.get_user(uid)
-        premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else ""
+        premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else " 🔓 FREE"
         txt = (f"👤 <b>PROFILE</b>\n\n"
                f"Name: {html.escape(user[1])}{premium_badge}\n"
                f"Level: {user[9]} | XP: {user[10]}\n"
@@ -1570,7 +1603,7 @@ def callback(c):
 
     if data == "achievements":
         user = db.get_user(uid)
-        achievements = json.loads(user[16] if user[16] else "[]")
+        achievements = json.loads(user[17] if user[17] else "[]")
         txt = "🏅 <b>ACHIEVEMENTS</b>\n\n"
         for ach_id, ach in ACHIEVEMENTS.items():
             status = "✅" if ach_id in achievements else "🔒"
@@ -1662,9 +1695,10 @@ def callback(c):
         return
 
     if data == "review_menu":
-        txt = "⭐ <b>SUBMIT REVIEW</b>\n\nProcess: Click button to start"
+        txt = "⭐ <b>SUBMIT REVIEW</b>\n\nProcess: Click button to start or view approved reviews."
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("✍️ Write Review", callback_data="review_start"))
+        kb.add(InlineKeyboardButton("📢 View Reviews", callback_data="view_reviews"))
         kb.add(InlineKeyboardButton("« Back", callback_data="back_main"))
         try:
             bot.send_message(uid, txt, reply_markup=kb)
@@ -1678,6 +1712,23 @@ def callback(c):
         user_states[uid] = {'type': 'review_rating'}
         bot.send_message(uid, "⭐ Send rating (1-5):\n1 = Poor, 5 = Excellent")
         bot.answer_callback_query(c.id)
+        return
+
+    if data == "view_reviews":
+        reviews = db.get_reviews(approved_only=True)
+        if not reviews:
+            bot.answer_callback_query(c.id, "No reviews yet!", show_alert=True)
+            return
+        # send reviews in PM
+        try:
+            for r in reviews[:10]:
+                # (review_id, user_id, username, text, rating, created_at, approved)
+                txt = f"⭐ {r[4]} • {r[2]}\n{(r[3] or '')[:600]}\n"
+                bot.send_message(uid, txt)
+            bot.answer_callback_query(c.id, "Sent reviews to you!")
+        except Exception as e:
+            logger.exception("Error sending reviews")
+            bot.answer_callback_query(c.id, "Error sending reviews", show_alert=True)
         return
 
     if data == "referral":
@@ -1710,7 +1761,9 @@ def callback(c):
                "/givepremium <id> <days> - Give premium\n"
                "/checkpremium <id> - Check premium\n"
                "/shoplist - View shop orders\n"
-               "/addpoints <id> <pts>\n"
+               "/addpoints <id> <pts>  (adds to hint balance)\n"
+               "/addscore <id> <pts>   (adds to total_score)\n"
+               "/givehints <id> <amt>\n"
                "/broadcast <msg>\n"
                "/listreviews\n"
                "/redeemlist")
@@ -1758,8 +1811,8 @@ def callback(c):
             bot.answer_callback_query(c.id, "No game!", show_alert=True)
             return
         try:
-            msg = bot.send_message(cid, "💬 Type the word you found:", reply_markup=ForceReply(selective=True))
-            bot.register_next_step_handler(msg, handle_guess)
+            # Send ForceReply message - our guess_reply_handler will catch the reply
+            bot.send_message(cid, "💬 Type the word you found:", reply_markup=ForceReply(selective=True))
             bot.answer_callback_query(c.id)
         except:
             bot.answer_callback_query(c.id, "Error!", show_alert=True)
@@ -1816,9 +1869,9 @@ def callback(c):
 
     bot.answer_callback_query(c.id)
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # FLASK
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 @app.route('/')
 def health():
     return "✅ Word Vortex Bot Running!", 200
@@ -1827,9 +1880,9 @@ def health():
 def health_check():
     return {"status": "ok", "bot": "word_vortex", "version": "10.5", "games": len(games)}, 200
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # RUN
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 if __name__ == "__main__":
     logger.info("🚀 Starting Word Vortex v10.5 FINAL FIXED!")
     logger.info("✅ Verify Loop FIXED")
