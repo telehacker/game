@@ -423,7 +423,7 @@ class Database:
     # fetch purchase to get user_id
         c.execute("SELECT user_id, item_type, price FROM shop_purchases WHERE purchase_id=?", (purchase_id,))
     r = c.fetchone()
-        conn.close()
+     conn.close()
          return r  # tuple or None
 
 
