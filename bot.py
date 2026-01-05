@@ -2176,7 +2176,7 @@ def handle_state(m):
 # ---------------------------
 # ForceReply handler for legacy "Found It!" flow (still supported)
 # ---------------------------
-@bot.message_handler(func=lambda m: (m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text) and m.text and not m.text.startswith('/')[...]
+@bot.message_handler(func=lambda m: (m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text) and m.text and not m.text.startswith('/'))[...]
 def guess_reply_handler(m):
     try:
         handle_guess(m)
