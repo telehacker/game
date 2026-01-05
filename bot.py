@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-WORD VORTEX ULTIMATE v10.5 - FULL FIXED & ENHANCED
+WORD VORTEX ULTIMATE v10.5 - FIXED PATCH
 
-This file is the merged, fixed, and enhanced version of your bot.py with:
-- Additive DB schema changes (settings, errors, patches, games.full_state)
-- sqlite3.Row usage
-- Error logging to DB + admin commands to list/view/issue errors
-- Patch upload & optional GitHub issue creation
-- Feature pack upload (JSON only, <=200 KB)
-- AI-assisted /suggest_fix (requires OPENAI_API_KEY)
-- Leaderboard image generation
-- /set_config and /get_config runtime settings (stored in settings table)
-- All previously present features (game flow, direct guesses, premium perks, referrals, redeem, shop, reviews)
+This file is a corrected version of the provided bot.py with fixes for:
+- Environment variable lookups for GitHub/OpenAI (was using literal tokens as keys)
+- Removed stray truncated placeholders (like "[...]") that caused syntax errors
+- Robust OpenAI response handling in /ai_add and /suggest_fix
+- Safer GitHub issue creation (create_patch_issue & issue_error)
+- Fixed broken /listreviews, /shoplist, /stats/profile output formatting
+- Fixed the reply-handler decorator for legacy "Found It!" flow
+- General hardening (checks, better error messages, logging to DB)
 """
 
 import os
@@ -49,11 +47,11 @@ FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
-# GitHub / OpenAI config (optional)
-GITHUB_TOKEN = os.environ.get("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")
-REPO_OWNER = os.environ.get("telehacker") or os.environ.get("telehacker")
-REPO_NAME = os.environ.get("game") or os.environ.get("game")
-OPENAI_API_KEY = os.environ.get("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")
+# --- Fix: proper env var names (previous code used literal tokens as env keys)
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # set this in your env if you want GH issue creation
+REPO_OWNER = os.environ.get("REPO_OWNER", "telehacker")
+REPO_NAME = os.environ.get("REPO_NAME", "game")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # set this for AI-assisted features
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -746,16 +744,13 @@ sys.excepthook = handle_uncaught
 
 # ---------------------------
 # IMAGE RENDERER
+# (unchanged; omitted for brevity in explanation)
 # ---------------------------
+
 class ImageRenderer:
     @staticmethod
     def draw_grid(grid: List[List[str]], placements: Dict, found: Dict[str,int],
                   mode="NORMAL", words_left=0, theme: str = "default", countdown_seconds: Optional[int] = None):
-        """
-        Draws the grid image.
-        If countdown_seconds provided, displays a static countdown at time of image generation.
-        theme can be used to select visual styles (e.g., 'gold', 'default').
-        """
         cell = 50
         header = 100
         footer = 70
@@ -766,7 +761,6 @@ class ImageRenderer:
         w = cols * cell + pad * 2
         h = header + footer + rows * cell + pad * 2
 
-        # Header color different for 'gold' theme
         any_premium_found = False
         try:
             for word, finder in (found or {}).items():
@@ -878,6 +872,7 @@ class ImageRenderer:
 
 # ---------------------------
 # GAME SESSION & MANAGEMENT
+# (unchanged except minor cleanup)
 # ---------------------------
 games: Dict[int, "GameSession"] = {}
 
@@ -1164,7 +1159,7 @@ def end_game(chat_id, reason: str = "finished"):
                 winner_user = db.get_user(winner[0])
                 prev_wins = winner_user['wins'] if winner_user and 'wins' in winner_user.keys() else (winner_user[5] if winner_user and len(winner_user) > 5 else 0)
                 db.update_user(winner[0], wins=prev_wins + 1)
-                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts\nReason: {reason}")
+                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user['name'])}\nScore: {winner[1]} pts\nReason: {reason}")
                 if session.game_id:
                     try:
                         db.log_game_end(session.game_id, winner[0], winner[1])
@@ -1518,15 +1513,23 @@ def cmd_stats(m):
 
     premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
+    name = user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player')
+    total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)
+    hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)
+    games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)
+    wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)
+    words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)
+    streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+
     txt = (f"👤 <b>PROFILE</b>\n\n"
-           f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player'))}{premium_badge}\n"
+           f"Name: {html.escape(name)}{premium_badge}\n"
            f"Level: {level} 🏅\n"
            f"XP: {xp}/{xp_needed} ({xp_progress:.1f}%)\n\n"
-           f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
-           f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-           f"Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)} • Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)}\n"
-           f"Words Found: {user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)}\n"
-           f"Streak: {user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)} days 🔥")
+           f"Score: {total_score} pts\n"
+           f"Balance: {hint_balance} pts\n"
+           f"Games: {games_played} • Wins: {wins}\n"
+           f"Words Found: {words_found}\n"
+           f"Streak: {streak} days 🔥")
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['leaderboard','lb'])
@@ -1534,11 +1537,14 @@ def cmd_leaderboard(m):
     top = db.get_top_players(10)
     txt = "🏆 <b>TOP 10 PLAYERS</b>\n\n"
     medals = ["🥇","🥈","🥉"]
+    if not top:
+        bot.reply_to(m, "No players yet!")
+        return
     for i, (name, score, level, is_prem) in enumerate(top, 1):
         medal = medals[i-1] if i <= 3 else f"{i}."
         badge = " 👑" if is_prem else ""
         txt += f"{medal} {html.escape(name)}{badge} • Lvl {level} • {score} pts\n"
-    bot.reply_to(m, txt if top else "No players yet!")
+    bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['daily'])
 def cmd_daily(m):
@@ -1762,10 +1768,16 @@ def cmd_shoplist(m):
 
     txt = "🛒 <b>SHOP PURCHASES</b>\n\n"
     for p in purchases:
-        # purchase_id, user_id, item_type, price, status, date
-        purchase_id, user_id, item_type, price, status, date = p
+        # p is sqlite3.Row
+        purchase_id = p['purchase_id'] if 'purchase_id' in p.keys() else p[0]
+        user_id = p['user_id'] if 'user_id' in p.keys() else p[1]
+        item_type = p['item_type'] if 'item_type' in p.keys() else p[2]
+        price = p['price'] if 'price' in p.keys() else p[3]
+        status = p['status'] if 'status' in p.keys() else p[4]
+        date = p['date'] if 'date' in p.keys() else p[5]
         user = db.get_user(user_id)
-        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {user['name'] if user and 'name' in user.keys() else (user[1] if user else user_id)} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n[...]"
+        uname = user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))
+        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {uname} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
 
     txt += "\n💡 Use /givepremium <user_id> <days> to activate"
     bot.reply_to(m, txt)
@@ -1781,7 +1793,8 @@ def cmd_listreviews(m):
     txt = "📝 <b>ALL REVIEWS</b>\n\n"
     for r in reviews[:50]:
         status = "✅" if r['approved'] else "⏳"
-        txt += f"{status} ID:{r['review_id']} | {r['username']} | ⭐{r['rating']}\n{(r['text'] or '')[:240]}...\n\n"
+        text_preview = (r['text'] or '')[:240]
+        txt += f"{status} ID:{r['review_id']} | {r['username']} | ⭐{r['rating']}\n{text_preview}\n\n"
     txt += "Use /approvereview <id> to approve or /delreview <id> to delete"
     bot.reply_to(m, txt)
 
@@ -1799,7 +1812,7 @@ def cmd_approvereview(m):
         bot.reply_to(m, f"✅ Approved review {review_id}")
         rv = db.get_review(review_id)
         if rv:
-            reviewer_id = rv[1]
+            reviewer_id = rv['user_id'] if 'user_id' in rv.keys() else rv[1]
             try:
                 bot.send_message(reviewer_id, "✅ Your review was approved and is now visible to others. Thank you!")
             except Exception:
@@ -1832,7 +1845,6 @@ def cmd_redeemlist(m):
         return
     txt = "💰 <b>PENDING REDEEMS</b>\n\n"
     for r in requests_list[:10]:
-        # request_id, user_id, username, points, amount_inr, upi_id, status, created_at, paid_at
         txt += f"ID: {r['request_id']} \nUser: {r['username']} ({r['user_id']})\nPoints: {r['points']} → ₹{r['amount_inr']}\nUPI: {r['upi_id']}\n\n"
     txt += "Use /redeempay <id> to mark as paid"
     bot.reply_to(m, txt)
@@ -1973,28 +1985,55 @@ def ai_add(message):
         bot.reply_to(message, "⚠️ Please provide a feature description.")
         return
 
+    if not OPENAI_API_KEY:
+        bot.reply_to(message, "❌ OpenAI API key not configured (OPENAI_API_KEY).")
+        return
+
     try:
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": "gpt-4o-mini",
             "messages": [
                 {"role": "system", "content": "You are a Python bot developer."},
                 {"role": "user", "content": f"Generate a Python function to {idea}. Keep it self-contained."}
-            ]
+            ],
+            "max_tokens": 1500,
+            "temperature": 0.2,
         }
         r = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
-        data = r.json()
+        if r.status_code != 200:
+            bot.reply_to(message, f"❌ OpenAI API error: {r.status_code} {r.text}")
+            return
 
-        # ✅ Safe check
+        data = r.json()
         if "choices" not in data or not data["choices"]:
             bot.reply_to(message, "❌ AI response missing 'choices'. Check your API key or quota.")
             return
 
-        code = data['choices'][0]['message']['content'].strip()
-        pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
-        bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{html.escape(code[:500])}</pre>", parse_mode="HTML")
+        # Extract content safely
+        choice = data["choices"][0]
+        content = ""
+        if isinstance(choice.get("message"), dict):
+            content = choice["message"].get("content", "")
+        else:
+            content = choice.get("text", "")
 
+        code = content.strip()
+        if not code:
+            bot.reply_to(message, "❌ Empty AI response.")
+            return
+
+        pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
+        # show a short preview
+        preview = html.escape(code[:1000])
+        bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{preview}</pre>")
     except Exception as e:
+        tb = traceback.format_exc()
+        logger.exception("AI add error")
+        try:
+            db.log_error("ai_add_error", str(e), tb, context=f"admin:{message.from_user.id}")
+        except Exception:
+            pass
         bot.reply_to(message, f"❌ AI error: {e}")
 
 # ---------------------------
@@ -2019,11 +2058,13 @@ def handle_feature_pack_upload(m):
     doc = m.document
     if not doc:
         bot.reply_to(m, "No document found.")
-        del user_states[uid]
+        if uid in user_states:
+            del user_states[uid]
         return
     if doc.file_size > 200000:
         bot.reply_to(m, "File too large. Max 200 KB.")
-        del user_states[uid]
+        if uid in user_states:
+            del user_states[uid]
         return
     try:
         f = bot.download_file(bot.get_file(doc.file_id).file_path)
@@ -2032,7 +2073,8 @@ def handle_feature_pack_upload(m):
         # basic validation: must be dict
         if not isinstance(parsed, dict):
             bot.reply_to(m, "Invalid JSON structure.")
-            del user_states[uid]
+            if uid in user_states:
+                del user_states[uid]
             return
         # save to DB and in-memory
         db.save_feature_pack(doc.file_name, content)
@@ -2067,11 +2109,13 @@ def handle_patch_upload(m):
     doc = m.document
     if not doc:
         bot.reply_to(m, "No document found.")
-        del user_states[uid]
+        if uid in user_states:
+            del user_states[uid]
         return
     if doc.file_size > 500000:
         bot.reply_to(m, "File too large. Max 500 KB.")
-        del user_states[uid]
+        if uid in user_states:
+            del user_states[uid]
         return
     try:
         f = bot.download_file(bot.get_file(doc.file_id).file_path)
@@ -2158,7 +2202,8 @@ def handle_state(m):
         flagged = any(bad in text.upper() for bad in BAD_WORDS)
 
         db.add_review(uid, m.from_user.first_name or "User", text, rating)
-        del user_states[uid]
+        if uid in user_states:
+            del user_states[uid]
 
         notify_owner(
             f"⭐ <b>NEW REVIEW</b>\n\n"
@@ -2179,19 +2224,22 @@ def handle_state(m):
             min_required = REDEEM_MIN_PREMIUM if db.is_premium(uid) else REDEEM_MIN_NON_PREMIUM
             if points < min_required:
                 bot.reply_to(m, f"❌ Minimum {min_required} points required to redeem (you are {'premium' if db.is_premium(uid) else 'non-premium'}).")
-                del user_states[uid]
+                if uid in user_states:
+                    del user_states[uid]
                 return
             user = db.get_user(uid)
             balance = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
             if balance < points:
                 bot.reply_to(m, f"❌ You only have {balance} points!")
-                del user_states[uid]
+                if uid in user_states:
+                    del user_states[uid]
                 return
             user_states[uid] = {'type': 'redeem_upi', 'points': points}
             bot.reply_to(m, "💳 Now send your UPI ID:\nExample: yourname@paytm")
         except Exception:
             bot.reply_to(m, "❌ Invalid number!")
-            del user_states[uid]
+            if uid in user_states:
+                del user_states[uid]
 
     elif state['type'] == 'redeem_upi':
         upi = m.text
@@ -2200,7 +2248,8 @@ def handle_state(m):
         db.add_redeem(uid, m.from_user.first_name or "User", points, upi)
         current_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
         db.update_user(uid, total_score=max(0, current_score - points))
-        del user_states[uid]
+        if uid in user_states:
+            del user_states[uid]
 
         notify_owner(
             f"💰 <b>NEW REDEEM REQUEST</b>\n\n"
@@ -2321,6 +2370,9 @@ def callback(c):
     if data == "leaderboard":
         top = db.get_top_players(10)
         txt = "🏆 <b>TOP 10</b>\n\n"
+        if not top:
+            bot.answer_callback_query(c.id, "No players yet!", show_alert=True)
+            return
         for i, (name, score, level, is_prem) in enumerate(top, 1):
             badge = " 👑" if is_prem else ""
             txt += f"{i}. {html.escape(name)}{badge} • {score} pts\n"
@@ -2335,12 +2387,19 @@ def callback(c):
     if data == "profile":
         user = db.get_user(uid)
         premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else " 🔓 FREE"
+        name = user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User')
+        level = user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)
+        xp = user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)
+        total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)
+        hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)
+        wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)
+        games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)
         txt = (f"👤 <b>PROFILE</b>\n\n"
-               f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User'))}{premium_badge}\n"
-               f"Level: {user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)} | XP: {user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)}\n"
-               f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
-               f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-               f"Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)} | Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)}")
+               f"Name: {html.escape(name)}{premium_badge}\n"
+               f"Level: {level} | XP: {xp}\n"
+               f"Score: {total_score} pts\n"
+               f"Balance: {hint_balance} pts\n"
+               f"Wins: {wins} | Games: {games_played}")
         try:
             bot.send_message(uid, txt)
             bot.answer_callback_query(c.id, "Sent to PM!")
@@ -2670,8 +2729,17 @@ def cmd_suggest_fix(m):
             }
             r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=30)
             if r.status_code == 200:
-                reply = r.json()["choices"][0]["message"]["content"]
-                bot.reply_to(m, f"🤖 Suggestion:\n{reply[:4000]}")
+                jr = r.json()
+                if "choices" in jr and jr["choices"]:
+                    choice = jr["choices"][0]
+                    reply = ""
+                    if isinstance(choice.get("message"), dict):
+                        reply = choice["message"].get("content", "")
+                    else:
+                        reply = choice.get("text", "")
+                    bot.reply_to(m, f"🤖 Suggestion:\n{reply[:4000]}")
+                else:
+                    bot.reply_to(m, "OpenAI returned no suggestions.")
             else:
                 bot.reply_to(m, f"OpenAI API error: {r.status_code} {r.text}")
         except Exception as e:
