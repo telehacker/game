@@ -2446,7 +2446,7 @@ def callback(c):
                f"Level: {user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)} | XP: {user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)}\n"
                f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
                f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-               f"Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)} | Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user els..."]
+               f"Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)} | Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user els...")
         try:
             bot.send_message(uid, txt)
             bot.answer_callback_query(c.id, "Sent to PM!")
