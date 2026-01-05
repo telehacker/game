@@ -371,9 +371,9 @@ class Database:
         return rows
         
         def get_review(self, review_id: int):
-    conn = self._conn(); c = conn.cursor()
-    c.execute("SELECT review_id, user_id, username, text, rating, created_at, approved FROM reviews WHERE review_id=?", (review_id,))
-    r = c.fetchone(); conn.close(); return r
+            conn = self._conn(); c = conn.cursor()
+            c.execute("SELECT review_id, user_id, username, text, rating, created_at, approved FROM reviews WHERE review_id=?", (review_id,))
+        r = c.fetchone(); conn.close(); return r
 
     def approve_review(self, review_id: int):
         conn = self._conn()
@@ -417,14 +417,14 @@ class Database:
         conn.close()
 
     def mark_shop_paid(self, purchase_id: int):
-    conn = self._conn(); c = conn.cursor()
-    c.execute("UPDATE shop_purchases SET status='paid' WHERE purchase_id=?", (purchase_id,))
-    conn.commit()
+        conn = self._conn(); c = conn.cursor()
+        c.execute("UPDATE shop_purchases SET status='paid' WHERE purchase_id=?", (purchase_id,))
+        conn.commit()
     # fetch purchase to get user_id
-    c.execute("SELECT user_id, item_type, price FROM shop_purchases WHERE purchase_id=?", (purchase_id,))
+        c.execute("SELECT user_id, item_type, price FROM shop_purchases WHERE purchase_id=?", (purchase_id,))
     r = c.fetchone()
-    conn.close()
-    return r  # tuple or None
+        conn.close()
+         return r  # tuple or None
 
 
     def add_referral(self, referrer_id: int, referred_id: int) -> bool:
