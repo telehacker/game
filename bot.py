@@ -12,7 +12,7 @@ Changes made (high level):
 - Timer: each game now has a 10-minute expiry (600s). After expiry a background worker ends the game automatically.
 - Auto-delete: when a game ends, the bot will attempt to delete the game's image/message.
 - Direct guesses: users can simply send plain text (word) in chat and the bot will detect and evaluate it when a game is active.
-- Premium perks (non-blocking): VIP badge, golden theme, no cooldown, cheaper hints, partial-letter hint for premium, double XP/daily, auto-daily option stub, priority support stub, monthly VIP draw tracking.
+- Premium perks (non-blocking): VIP badge, golden theme, no cooldown, cheaper hints, partial-letter hint for premium, double XP/daily, auto-daily option stub, priority support stub, monthly VIP draw t[...]
 - Feature-pack loader: owner can upload a JSON 'feature pack' (no code execution) to add theme/messages/shop-items. File is validated and saved.
 - No arbitrary code execution from Telegram uploads. Safe JSON packs only.
 - All DB schema changes are additive; existing logs and leaderboards preserved.
@@ -30,6 +30,7 @@ import logging
 import sqlite3
 import json
 import threading
+import traceback
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Optional, Any
 
@@ -53,6 +54,12 @@ CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
+
+# GitHub / OpenAI config (optional)
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+REPO_OWNER = os.environ.get("REPO_OWNER") or os.environ.get("GITHUB_REPO_OWNER")
+REPO_NAME = os.environ.get("REPO_NAME") or os.environ.get("GITHUB_REPO_NAME")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -180,11 +187,14 @@ load_words()
 # ---------------------------
 class Database:
     def __init__(self):
-        self.db = "word_vortex_v105_final.db"
+        # Use DB_PATH if provided to allow custom DB location
+        self.db = os.environ.get("DB_PATH", "word_vortex_v105_final.db")
         self._init()
 
     def _conn(self):
-        return sqlite3.connect(self.db, check_same_thread=False)
+        conn = sqlite3.connect(self.db, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _init(self):
         conn = self._conn()
@@ -266,6 +276,37 @@ class Database:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT, contents TEXT, uploaded_at TEXT
         )""")
+
+        # Additional tables required by the Technical paragraph
+        c.execute("""CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS errors (
+            error_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            error_type TEXT,
+            message TEXT,
+            tb TEXT,
+            context TEXT,
+            created_at TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS patches (
+            patch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT,
+            contents TEXT,
+            uploaded_at TEXT,
+            created_issue_url TEXT
+        )""")
+
+        # Ensure games table has full_state column (additive)
+        try:
+            c.execute("ALTER TABLE games ADD COLUMN full_state TEXT")
+        except Exception:
+            # Column probably exists already; ignore
+            pass
 
         conn.commit()
         conn.close()
@@ -538,15 +579,7 @@ class Database:
         if not urow:
             conn.close()
             return False
-        games_played, words_found, verified = (urow[0] or 0), (urow[18] if len(urow) > 18 and urow[18] is not None else 0), (urow[19] if len(urow) > 19 else 0)
-        # Note: we stored verified as column index 19 (0-based) earlier in schema; handle carefully
-        # For safety, fallback if indexes differ:
-        try:
-            # Attempt to get verified value at expected position index 19
-            verified = urow[19] if len(urow) > 19 else verified
-        except Exception:
-            pass
-
+        games_played, words_found, verified = (urow[4] or 0), (urow['words_found'] if 'words_found' in urow.keys() else (urow[18] if len(urow) > 18 and urow[18] is not None else 0)), (urow['verified'] if 'verified' in urow.keys() else (urow[19] if len(urow) > 19 else 0))
         # require verification + (games OR words threshold)
         if not verified:
             conn.close()
@@ -576,7 +609,7 @@ class Database:
         if not row:
             conn.close()
             return False, 0
-        last_daily, streak = row
+        last_daily, streak = row['last_daily'] if 'last_daily' in row.keys() else row[12], row['streak'] if 'streak' in row.keys() else row[11]
 
         today = datetime.now().strftime("%Y-%m-%d")
         if last_daily == today:
@@ -615,11 +648,11 @@ class Database:
         return rows
 
     # Game logging
-    def log_game_start(self, chat_id: int, mode: str, size: int) -> int:
+    def log_game_start(self, chat_id: int, mode: str, size: int, full_state: Optional[str] = None) -> int:
         conn = self._conn()
         c = conn.cursor()
-        c.execute("INSERT INTO games (chat_id, mode, size, start_time) VALUES (?, ?, ?, ?)",
-                  (chat_id, mode, size, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        c.execute("INSERT INTO games (chat_id, mode, size, start_time, full_state) VALUES (?, ?, ?, ?, ?)",
+                  (chat_id, mode, size, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), full_state))
         conn.commit()
         game_id = c.lastrowid
         conn.close()
@@ -679,7 +712,39 @@ class Database:
         conn.commit()
         conn.close()
 
+    def save_patch(self, filename: str, contents: str):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("INSERT INTO patches (filename, contents, uploaded_at) VALUES (?, ?, ?)",
+                  (filename, contents, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        pid = c.lastrowid
+        conn.close()
+        return pid
+
+    def log_error(self, error_type: str, message: str, tb: str = "", context: str = ""):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("""INSERT INTO errors (error_type, message, tb, context, created_at)
+                     VALUES (?, ?, ?, ?, ?)""",
+                  (error_type, message, tb, context, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        eid = c.lastrowid
+        conn.close()
+        return eid
+
 db = Database()
+
+# Global uncaught exception handler: log to DB and logger
+def handle_uncaught(exc_type, exc, exc_tb):
+    tb = "".join(traceback.format_exception(exc_type, exc, exc_tb))
+    try:
+        db.log_error(str(exc_type), str(exc), tb, context="uncaught")
+    except Exception:
+        pass
+    logger.error("Uncaught exception: %s", tb)
+
+sys.excepthook = handle_uncaught
 
 # ---------------------------
 # IMAGE RENDERER
@@ -936,9 +1001,19 @@ def schedule_game_expiry(session: GameSession):
                 try:
                     end_game(session.chat_id, reason="time")
                 except Exception:
+                    tb = traceback.format_exc()
                     logger.exception("Error ending expired game")
+                    try:
+                        db.log_error("end_game_error", "Error ending expired game", tb, context=f"chat:{session.chat_id}")
+                    except Exception:
+                        pass
         except Exception:
+            tb = traceback.format_exc()
             logger.exception("Expiry worker error")
+            try:
+                db.log_error("expiry_worker_error", "Expiry worker error", tb)
+            except Exception:
+                pass
     t = threading.Thread(target=worker, daemon=True)
     t.start()
 
@@ -953,9 +1028,26 @@ def start_game(chat_id, starter_id, mode="normal", is_hard=False, custom_words=N
     session = GameSession(chat_id, mode, is_hard, custom_words, theme)
     games[chat_id] = session
     try:
-        session.game_id = db.log_game_start(chat_id, mode, session.size)
+        # Save a small JSON snapshot of initial game state into DB
+        try:
+            full_state = json.dumps({
+                "size": session.size,
+                "words": session.words,
+                "placements": {w: coords for w, coords in session.placements.items()},
+                "mode": session.mode,
+                "theme": session.theme
+            }, default=str)
+        except Exception:
+            full_state = None
+
+        session.game_id = db.log_game_start(chat_id, mode, session.size, full_state=full_state)
     except Exception:
+        tb = traceback.format_exc()
         logger.exception("Failed to log game start")
+        try:
+            db.log_error("log_game_start", "Failed to log game start", tb, context=f"chat:{chat_id}")
+        except Exception:
+            pass
 
     user = db.get_user(starter_id)
     try:
@@ -995,7 +1087,12 @@ def start_game(chat_id, starter_id, mode="normal", is_hard=False, custom_words=N
 
         return session
     except Exception as e:
+        tb = traceback.format_exc()
         logger.exception("Start game failed: %s", e)
+        try:
+            db.log_error("start_game_error", str(e), tb, context=f"chat:{chat_id}")
+        except Exception:
+            pass
         if chat_id in games:
             del games[chat_id]
         try:
@@ -1044,7 +1141,12 @@ def update_game(chat_id):
             session.message_id = msg.message_id
 
     except Exception:
+        tb = traceback.format_exc()
         logger.exception("Update failed")
+        try:
+            db.log_error("update_game_error", "Update failed", tb, context=f"chat:{chat_id}")
+        except Exception:
+            pass
 
 def end_game(chat_id, reason: str = "finished"):
     """
@@ -1081,7 +1183,12 @@ def end_game(chat_id, reason: str = "finished"):
                 pass
 
     except Exception:
+        tb = traceback.format_exc()
         logger.exception("Error while ending game")
+        try:
+            db.log_error("end_game_error", "Error while ending game", tb, context=f"chat:{chat_id}")
+        except Exception:
+            pass
     finally:
         try:
             del games[chat_id]
@@ -1174,7 +1281,7 @@ def handle_guess(msg):
     # increment words_found in DB
     user = db.get_user(uid)
     try:
-        current_words_found = user[18] if user and len(user) > 18 and user[18] is not None else 0
+        current_words_found = user['words_found'] if 'words_found' in user.keys() else (user[18] if user and len(user) > 18 and user[18] is not None else 0)
     except Exception:
         current_words_found = 0
     try:
@@ -1442,12 +1549,12 @@ def cmd_daily(m):
     user = db.get_user(m.from_user.id)
 
     # award streak achievement if applicable
-    if user and user[11] >= 7:
+    if user and (user['streak'] if 'streak' in user.keys() else (user[11] if len(user) > 11 else 0)) >= 7:
         if db.add_achievement(m.from_user.id, "streak_master"):
             bot.send_message(m.chat.id, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['streak_master']['icon']} {ACHIEVEMENTS['streak_master']['name']}")
 
     premium_msg = " (2x Premium)" if db.is_premium(m.from_user.id) else ""
-    txt = f"🎁 <b>DAILY REWARD!</b>\n\n+{reward} pts{premium_msg}\nStreak: {user[11] if user else 0} days 🔥"
+    txt = f"🎁 <b>DAILY REWARD!</b>\n\n+{reward} pts{premium_msg}\nStreak: {user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)} days 🔥"
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['referral','invite'])
@@ -1630,7 +1737,7 @@ def cmd_checkpremium(m):
         user = db.get_user(user_id)
         is_prem = db.is_premium(user_id)
         if is_prem:
-            expiry = user[15] if user and len(user) > 15 else "unknown"
+            expiry = user['premium_expiry'] if 'premium_expiry' in user.keys() else user[15] if user and len(user) > 15 else "unknown"
             txt = f"👑 <b>PREMIUM USER</b>\n\nName: {user[1]}\nID: {user_id}\nExpiry: {expiry}"
         else:
             txt = f"❌ <b>NOT PREMIUM</b>\n\nName: {user[1]}\nID: {user_id}"
@@ -1657,7 +1764,7 @@ def cmd_shoplist(m):
         # purchase_id, user_id, item_type, price, status, date
         purchase_id, user_id, item_type, price, status, date = p
         user = db.get_user(user_id)
-        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {user[1] if user else user_id} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
+        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {user[1] if user else user_id} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n[...]"
 
     txt += "\n💡 Use /givepremium <user_id> <days> to activate"
     bot.reply_to(m, txt)
@@ -1760,14 +1867,229 @@ def cmd_gamehistory(m):
         txt += f"Game #{gid} • {mode} • {size}x{size}\nStart: {start_time}\nEnd: {end_time or 'ongoing'}\nWinner: {winner_id or 'N/A'} • {winner_score or 0}\n\n"
     bot.reply_to(m, txt)
 
-@bot.message_handler(func=lambda m: True, content_types=['text','photo','sticker','document'])
-def record_chat(m):
+# Error listing/inspection/issue creation commands (admin)
+@bot.message_handler(commands=['list_errors'])
+def cmd_list_errors(m):
+    if not db.is_admin(m.from_user.id):
+        return
+    conn = db._conn()
+    c = conn.cursor()
+    c.execute("SELECT error_id, error_type, message, created_at FROM errors ORDER BY created_at DESC LIMIT 30")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        bot.reply_to(m, "No errors logged.")
+        return
+    txt = "❗️ Recent Errors\n\n"
+    for r in rows:
+        # r is sqlite3.Row
+        txt += f"ID:{r['error_id']} | {r['error_type']} | {r['created_at']}\n{(r['message'] or '')[:300]}\n\n"
+    bot.reply_to(m, txt)
+
+@bot.message_handler(commands=['view_error'])
+def cmd_view_error(m):
+    if not db.is_admin(m.from_user.id):
+        return
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /view_error <id>")
+        return
     try:
-        if m.chat.type in ("group","supergroup"):
-            db.add_known_chat(m.chat.id, m.chat.title or "")
-    except Exception:
-        pass
-    # do not block other handlers
+        eid = int(args[1])
+        conn = db._conn()
+        c = conn.cursor()
+        c.execute("SELECT * FROM errors WHERE error_id=?", (eid,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            bot.reply_to(m, "Error not found")
+            return
+        tb = row['tb'] or row['tb'][:1800]
+        txt = f"ID: {row['error_id']}\nType: {row['error_type']}\nTime: {row['created_at']}\nMessage:\n{row['message']}\n\nTraceback:\n{tb}"
+        # send as long message (slice if too long)
+        bot.reply_to(m, txt if len(txt) < 4000 else txt[:3900] + "\n\n[truncated]")
+    except Exception as e:
+        bot.reply_to(m, f"Invalid id: {e}")
+
+@bot.message_handler(commands=['issue_error'])
+def cmd_issue_error(m):
+    if not db.is_admin(m.from_user.id):
+        return
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /issue_error <error_id>")
+        return
+    try:
+        eid = int(args[1])
+        conn = db._conn()
+        c = conn.cursor()
+        c.execute("SELECT * FROM errors WHERE error_id=?", (eid,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            bot.reply_to(m, "Error not found")
+            return
+
+        if not (GITHUB_TOKEN and REPO_OWNER and REPO_NAME):
+            bot.reply_to(m, "GitHub not configured (GITHUB_TOKEN/REPO_OWNER/REPO_NAME).")
+            return
+
+        title = f"Auto-logged Error #{eid}: {row['error_type']}"
+        body = f"Time: {row['created_at']}\n\nMessage:\n{row['message']}\n\nTraceback:\n```\n{row['tb']}\n```\n\nContext: {row['context']}"
+        try:
+            gh_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+            payload = {"title": title, "body": body, "labels": ["bug", "auto-logged"]}
+            r = requests.post(gh_url, headers=headers, json=payload, timeout=15)
+            if r.status_code in (200,201):
+                issue_url = r.json().get("html_url")
+                conn = db._conn()
+                c = conn.cursor()
+                c.execute("UPDATE errors SET context = COALESCE(context, '') || ? WHERE error_id=?", (f"\nIssue: {issue_url}", eid))
+                conn.commit()
+                conn.close()
+                bot.reply_to(m, f"Issue created: {issue_url}")
+            else:
+                bot.reply_to(m, f"Failed to create issue: {r.status_code} {r.text}")
+        except Exception as e:
+            bot.reply_to(m, f"Error creating issue: {e}")
+    except Exception as e:
+        bot.reply_to(m, f"Invalid id: {e}")
+
+# ---------------------------
+# FEATURE PACK UPLOAD (owner-only, safe JSON)
+# ---------------------------
+@bot.message_handler(commands=['upload_feature_pack'])
+def cmd_upload_feature_pack(m):
+    """
+    Owner can upload a JSON file (as document) with theme/messages/shop entries.
+    Example: {"name":"summer","themes":{"gold":{"footer":"VIP • Summer"}}}
+    This is safe: only JSON content is accepted, no code executed.
+    """
+    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+        bot.reply_to(m, "Unauthorized")
+        return
+    bot.reply_to(m, "✅ Send JSON file as document now (only JSON, <= 200 KB).")
+    user_states[m.from_user.id] = {'type': 'feature_pack_upload'}
+
+@bot.message_handler(func=lambda m: m.from_user.id in user_states and user_states[m.from_user.id].get('type') == 'feature_pack_upload', content_types=['document'])
+def handle_feature_pack_upload(m):
+    uid = m.from_user.id
+    doc = m.document
+    if not doc:
+        bot.reply_to(m, "No document found.")
+        del user_states[uid]
+        return
+    if doc.file_size > 200000:
+        bot.reply_to(m, "File too large. Max 200 KB.")
+        del user_states[uid]
+        return
+    try:
+        f = bot.download_file(bot.get_file(doc.file_id).file_path)
+        content = f.decode('utf-8')
+        parsed = json.loads(content)
+        # basic validation: must be dict
+        if not isinstance(parsed, dict):
+            bot.reply_to(m, "Invalid JSON structure.")
+            del user_states[uid]
+            return
+        # save to DB and in-memory
+        db.save_feature_pack(doc.file_name, content)
+        global feature_pack
+        feature_pack = parsed
+        bot.reply_to(m, "✅ Feature pack uploaded and applied (non-code features).")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Failed to load: {e}")
+        tb = traceback.format_exc()
+        try:
+            db.log_error("feature_pack_upload_error", str(e), tb, context=f"file:{doc.file_name if doc else 'unknown'}")
+        except Exception:
+            pass
+    finally:
+        if uid in user_states:
+            del user_states[uid]
+
+# ---------------------------
+# PATCH UPLOAD (owner-only)
+# ---------------------------
+@bot.message_handler(commands=['upload_patch'])
+def cmd_upload_patch(m):
+    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+        bot.reply_to(m, "Unauthorized")
+        return
+    bot.reply_to(m, "✅ Send patch file as document now (only text/patch, <= 500 KB). It will be saved to DB. No code will be executed.")
+    user_states[m.from_user.id] = {'type': 'patch_upload'}
+
+@bot.message_handler(func=lambda m: m.from_user.id in user_states and user_states[m.from_user.id].get('type') == 'patch_upload', content_types=['document'])
+def handle_patch_upload(m):
+    uid = m.from_user.id
+    doc = m.document
+    if not doc:
+        bot.reply_to(m, "No document found.")
+        del user_states[uid]
+        return
+    if doc.file_size > 500000:
+        bot.reply_to(m, "File too large. Max 500 KB.")
+        del user_states[uid]
+        return
+    try:
+        f = bot.download_file(bot.get_file(doc.file_id).file_path)
+        content = f.decode('utf-8', errors='replace')
+        pid = db.save_patch(doc.file_name, content)
+        bot.reply_to(m, f"✅ Patch uploaded and saved as #{pid}. To create a GitHub issue for this patch use /create_patch_issue {pid} (requires GITHUB_TOKEN and REPO settings).")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Failed to upload: {e}")
+        tb = traceback.format_exc()
+        try:
+            db.log_error("patch_upload_error", str(e), tb, context=f"file:{doc.file_name if doc else 'unknown'}")
+        except Exception:
+            pass
+    finally:
+        if uid in user_states:
+            del user_states[uid]
+
+@bot.message_handler(commands=['create_patch_issue'])
+def cmd_create_patch_issue(m):
+    if not db.is_admin(m.from_user.id):
+        return
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /create_patch_issue <patch_id>")
+        return
+    try:
+        patch_id = int(args[1])
+        conn = db._conn()
+        c = conn.cursor()
+        c.execute("SELECT * FROM patches WHERE patch_id=?", (patch_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            bot.reply_to(m, "Patch not found.")
+            return
+        if not (GITHUB_TOKEN and REPO_OWNER and REPO_NAME):
+            bot.reply_to(m, "GitHub not configured (GITHUB_TOKEN/REPO_OWNER/REPO_NAME).")
+            return
+        title = f"Patch upload #{patch_id}: {row['filename']}"
+        body = f"Uploaded patch:\n\nFilename: {row['filename']}\nUploaded at: {row['uploaded_at']}\n\nContents:\n```\n{row['contents'][:6000]}\n```\n"
+        try:
+            gh_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+            payload = {"title": title, "body": body, "labels": ["patch", "uploaded"]}
+            r = requests.post(gh_url, headers=headers, json=payload, timeout=15)
+            if r.status_code in (200,201):
+                issue_url = r.json().get("html_url")
+                conn = db._conn()
+                c = conn.cursor()
+                c.execute("UPDATE patches SET created_issue_url=? WHERE patch_id=?", (issue_url, patch_id))
+                conn.commit()
+                conn.close()
+                bot.reply_to(m, f"Issue created: {issue_url}")
+            else:
+                bot.reply_to(m, f"Failed to create issue: {r.status_code} {r.text}")
+        except Exception as e:
+            bot.reply_to(m, f"Error creating issue: {e}")
+    except Exception as e:
+        bot.reply_to(m, f"Invalid id: {e}")
 
 # ---------------------------
 # TEXT STATE HANDLERS (reviews, redeem flows)
@@ -1854,12 +2176,17 @@ def handle_state(m):
 # ---------------------------
 # ForceReply handler for legacy "Found It!" flow (still supported)
 # ---------------------------
-@bot.message_handler(func=lambda m: (m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text) and m.text and not m.text.startswith('/'))
+@bot.message_handler(func=lambda m: (m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text) and m.text and not m.text.startswith('/')[...]
 def guess_reply_handler(m):
     try:
         handle_guess(m)
     except Exception:
+        tb = traceback.format_exc()
         logger.exception("Error handling guess reply")
+        try:
+            db.log_error("guess_reply_error", "Error handling guess reply", tb, context=f"chat:{m.chat.id}")
+        except Exception:
+            pass
 
 # ---------------------------
 # CALLBACKS (menus & game actions)
@@ -2003,7 +2330,7 @@ def callback(c):
             return
         user = db.get_user(uid)
         premium_msg = " (2x Premium)" if db.is_premium(uid) else ""
-        txt = f"🎁 +{reward} pts{premium_msg}\nStreak: {user[11] if user else 0} days!"
+        txt = f"🎁 +{reward} pts{premium_msg}\nStreak: {user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)} days!"
         try:
             bot.send_message(uid, txt)
             bot.answer_callback_query(c.id)
@@ -2255,52 +2582,65 @@ def callback(c):
     bot.answer_callback_query(c.id)
 
 # ---------------------------
-# FEATURE PACK UPLOAD (owner-only, safe JSON)
+# FEATURE: AI-assisted suggestions for errors (/suggest_fix)
 # ---------------------------
-@bot.message_handler(commands=['upload_feature_pack'])
-def cmd_upload_feature_pack(m):
-    """
-    Owner can upload a JSON file (as document) with theme/messages/shop entries.
-    Example: {"name":"summer","themes":{"gold":{"footer":"VIP • Summer"}}}
-    This is safe: only JSON content is accepted, no code executed.
-    """
-    if not (OWNER_ID and m.from_user.id == OWNER_ID):
-        bot.reply_to(m, "Unauthorized")
+@bot.message_handler(commands=['suggest_fix'])
+def cmd_suggest_fix(m):
+    if not db.is_admin(m.from_user.id):
         return
-    bot.reply_to(m, "✅ Send JSON file as document now (only JSON, <= 200 KB).")
-    user_states[m.from_user.id] = {'type': 'feature_pack_upload'}
-
-@bot.message_handler(func=lambda m: m.from_user.id in user_states and user_states[m.from_user.id].get('type') == 'feature_pack_upload', content_types=['document'])
-def handle_feature_pack_upload(m):
-    uid = m.from_user.id
-    doc = m.document
-    if not doc:
-        bot.reply_to(m, "No document found.")
-        del user_states[uid]
-        return
-    if doc.file_size > 200000:
-        bot.reply_to(m, "File too large. Max 200 KB.")
-        del user_states[uid]
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /suggest_fix <error_id>")
         return
     try:
-        f = bot.download_file(bot.get_file(doc.file_id).file_path)
-        content = f.decode('utf-8')
-        parsed = json.loads(content)
-        # basic validation: must be dict
-        if not isinstance(parsed, dict):
-            bot.reply_to(m, "Invalid JSON structure.")
-            del user_states[uid]
+        eid = int(args[1])
+        conn = db._conn()
+        c = conn.cursor()
+        c.execute("SELECT * FROM errors WHERE error_id=?", (eid,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            bot.reply_to(m, "Error not found")
             return
-        # save to DB and in-memory
-        db.save_feature_pack(doc.file_name, content)
-        global feature_pack
-        feature_pack = parsed
-        bot.reply_to(m, "✅ Feature pack uploaded and applied (non-code features).")
+
+        if not OPENAI_API_KEY:
+            bot.reply_to(m, "OpenAI not configured (OPENAI_API_KEY).")
+            return
+
+        # Build prompt (sanitize to avoid leaking secrets)
+        tb = (row['tb'] or "")[:3000]
+        message = (row['message'] or "")[:1000]
+        prompt = (
+            "You are a concise Python/Telegram-bot debugging assistant. "
+            "Provide actionable fixes and code suggestions for the error below. "
+            "Do NOT reveal any secrets or tokens. Keep response short (max 800 tokens).\n\n"
+            f"Error message:\n{message}\n\nTraceback:\n{tb}\n\n"
+            "Give suggested changes and example code snippets if relevant."
+        )
+
+        try:
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            body = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 800,
+                "temperature": 0.2,
+            }
+            r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=30)
+            if r.status_code == 200:
+                reply = r.json()["choices"][0]["message"]["content"]
+                bot.reply_to(m, f"🤖 Suggestion:\n{reply[:4000]}")
+            else:
+                bot.reply_to(m, f"OpenAI API error: {r.status_code} {r.text}")
+        except Exception as e:
+            bot.reply_to(m, f"Error contacting OpenAI: {e}")
+            tb2 = traceback.format_exc()
+            try:
+                db.log_error("openai_request_error", str(e), tb2, context=f"error_id:{eid}")
+            except Exception:
+                pass
     except Exception as e:
-        bot.reply_to(m, f"❌ Failed to load: {e}")
-    finally:
-        if uid in user_states:
-            del user_states[uid]
+        bot.reply_to(m, f"Invalid id: {e}")
 
 # ---------------------------
 # FALLBACK: DIRECT GUESS HANDLING
@@ -2315,7 +2655,51 @@ def direct_guess_handler(m):
         if m.chat.id in games:
             handle_guess(m)
     except Exception:
+        tb = traceback.format_exc()
         logger.exception("Error in direct_guess_handler")
+        try:
+            db.log_error("direct_guess_error", "Error in direct_guess_handler", tb, context=f"chat:{m.chat.id}")
+        except Exception:
+            pass
+
+# ---------------------------
+# LEADERBOARD IMAGE
+# ---------------------------
+@bot.message_handler(commands=['leaderboard_image'])
+def cmd_leaderboard_image(m):
+    top = db.get_top_players(10)
+    if not top:
+        bot.reply_to(m, "No players yet.")
+        return
+
+    try:
+        w,h = 620, 80 + 36*len(top)
+        img = Image.new("RGB",(w,h),"#0f1724")
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",18)
+        except Exception:
+            font = ImageFont.load_default()
+
+        draw.text((20,10),"🏆 TOP PLAYERS", fill="#ffd700", font=font)
+        y = 50
+        for i,(name,score,level,is_prem) in enumerate(top,1):
+            txt = f"{i}. {name}{' 👑' if is_prem else ''} — {score} pts (L{level})"
+            draw.text((20,y), txt, fill="#e6eef8", font=font)
+            y += 34
+
+        bio = io.BytesIO()
+        img.save(bio, "PNG")
+        bio.seek(0)
+        bio.name = "leaderboard.png"
+        bot.send_photo(m.chat.id, bio)
+    except Exception as e:
+        bot.reply_to(m, f"Error generating image: {e}")
+        tb = traceback.format_exc()
+        try:
+            db.log_error("leaderboard_image_error", str(e), tb)
+        except Exception:
+            pass
 
 # ---------------------------
 # FLASK (health)
@@ -2327,6 +2711,18 @@ def health():
 @app.route('/health')
 def health_check():
     return {"status": "ok", "bot": "word_vortex", "version": "10.5", "games": len(games)}, 200
+
+# ---------------------------
+# NOTIFICATIONS & MISC
+# ---------------------------
+def notify_owner(text: str):
+    try:
+        if NOTIFICATION_GROUP:
+            bot.send_message(NOTIFICATION_GROUP, text)
+        elif OWNER_ID:
+            bot.send_message(OWNER_ID, text)
+    except Exception:
+        logger.debug("Failed to notify owner/group")
 
 # ---------------------------
 # RUN
