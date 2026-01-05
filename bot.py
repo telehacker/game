@@ -122,11 +122,11 @@ ACHIEVEMENTS = {
 
 # Shop Items - REAL MONEY (₹)
 SHOP_ITEMS = {
-    "xp_booster": {"name": "🚀 XP Booster 2x (30 days)", "price": 50, "type": "xp_boost", "value": 30},
-    "premium_1d": {"name": "👑 Premium 1 Day", "price": 10, "type": "premium", "value": 1},
-    "premium_7d": {"name": "👑 Premium 7 Days", "price": 50, "type": "premium", "value": 7},
-    "premium_30d": {"name": "👑 Premium 30 Days", "price": 150, "type": "premium", "value": 30},
-    "hints_10": {"name": "💡 10 Hints Pack", "price": 25, "type": "hints", "value": 10},
+    "xp_booster": {"name": "🚀 XP Booster 2x (30 days)", "price": 199, "type": "xp_boost", "value": 30},
+    "premium_1d": {"name": "👑 Premium 1 Day", "price": 49, "type": "premium", "value": 1},
+    "premium_7d": {"name": "👑 Premium 7 Days", "price": 249, "type": "premium", "value": 7},
+    "premium_30d": {"name": "👑 Premium 30 Days", "price": 999, "type": "premium", "value": 30},
+    "hints_10": {"name": "💡 10 Hints Pack", "price": 30, "type": "hints", "value": 10},
 }
 
 user_states = {}
@@ -184,6 +184,17 @@ class Database:
             referrer_id INTEGER, referred_id INTEGER,
             created_at TEXT, UNIQUE(referrer_id, referred_id)
         )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS games (
+            game_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER, mode TEXT, size INTEGER,
+           start_time TEXT, end_time TEXT, winner_id INTEGER, winner_score INTEGER
+       )""")
+
+     c.execute("""CREATE TABLE IF NOT EXISTS game_finds (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         game_id INTEGER, word TEXT, finder_id INTEGER, found_at TEXT
+      )""")
 
         conn.commit()
         conn.close()
@@ -344,6 +355,11 @@ class Database:
         rows = c.fetchall()
         conn.close()
         return rows
+        
+        def get_review(self, review_id: int):
+    conn = self._conn(); c = conn.cursor()
+    c.execute("SELECT review_id, user_id, username, text, rating, created_at, approved FROM reviews WHERE review_id=?", (review_id,))
+    r = c.fetchone(); conn.close(); return r
 
     def approve_review(self, review_id: int):
         conn = self._conn()
@@ -385,6 +401,17 @@ class Database:
                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), request_id))
         conn.commit()
         conn.close()
+
+    def mark_shop_paid(self, purchase_id: int):
+    conn = self._conn(); c = conn.cursor()
+    c.execute("UPDATE shop_purchases SET status='paid' WHERE purchase_id=?", (purchase_id,))
+    conn.commit()
+    # fetch purchase to get user_id
+    c.execute("SELECT user_id, item_type, price FROM shop_purchases WHERE purchase_id=?", (purchase_id,))
+    r = c.fetchone()
+    conn.close()
+    return r  # tuple or None
+
 
     def add_referral(self, referrer_id: int, referred_id: int) -> bool:
         conn = self._conn()
@@ -440,7 +467,45 @@ class Database:
         rows = [r[0] for r in c.fetchall()]
         conn.close()
         return rows
+def log_game_start(self, chat_id: int, mode: str, size: int) -> int:
+    conn = self._conn(); c = conn.cursor()
+    c.execute("INSERT INTO games (chat_id, mode, size, start_time) VALUES (?, ?, ?, ?)",
+              (chat_id, mode, size, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    game_id = c.lastrowid
+    conn.close()
+    return game_id
 
+def log_word_found(self, game_id: int, word: str, finder_id: int):
+    conn = self._conn(); c = conn.cursor()
+    c.execute("INSERT INTO game_finds (game_id, word, finder_id, found_at) VALUES (?, ?, ?, ?)",
+              (game_id, word, finder_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit(); conn.close()
+
+def log_game_end(self, game_id: int, winner_id: int, winner_score: int):
+    conn = self._conn(); c = conn.cursor()
+    c.execute("UPDATE games SET end_time=?, winner_id=?, winner_score=? WHERE game_id=?",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), winner_id, winner_score, game_id))
+    conn.commit(); conn.close()
+
+def get_game_history(self, user_id: Optional[int]=None, limit=20):
+    conn = self._conn(); c = conn.cursor()
+    if user_id:
+        c.execute("""SELECT g.game_id, g.chat_id, g.mode, g.size, g.start_time, g.end_time, g.winner_id, g.winner_score
+                     FROM games g
+                     JOIN game_finds f ON g.game_id = f.game_id
+                     WHERE f.finder_id=? GROUP BY g.game_id ORDER BY g.start_time DESC LIMIT ?""", (user_id, limit))
+    else:
+        c.execute("SELECT game_id, chat_id, mode, size, start_time, end_time, winner_id, winner_score FROM games ORDER BY start_time DESC LIMIT ?", (limit,))
+    rows = c.fetchall(); conn.close()
+    return rows
+
+def get_game_finds(self, game_id: int):
+    conn = self._conn(); c = conn.cursor()
+    c.execute("SELECT word, finder_id, found_at FROM game_finds WHERE game_id=? ORDER BY found_at", (game_id,))
+    rows = c.fetchall(); conn.close()
+    return rows
+    
 db = Database()
 
 # ══════════════════════════════════════════════════════════════════[...]
@@ -604,20 +669,32 @@ class GameSession:
         self.chat_id = chat_id
         self.mode = mode
         self.is_hard = is_hard
+        # Size decides word_count deterministically
         self.size = 10 if is_hard else 8
-        self.word_count = 8 if is_hard else 6
+        self.word_count = 8 if self.size == 10 else 6
         self.start_time = time.time()
         self.grid: List[List[str]] = []
         self.placements: Dict[str, List[Tuple[int,int]]] = {}
-        # found: map word -> finder_user_id (so we can show premium-specific visuals)
+        # found: map word -> finder_user_id
         self.found: Dict[str, int] = {}
         self.players: Dict[int, int] = {}
         self.last_guess: Dict[int, float] = {}
         self.last_find_time: Dict[int, float] = {}
         self.combo_count: Dict[int, int] = {}
         self.message_id: Optional[int] = None
+        self.game_id: Optional[int] = None   # will store DB game id if logged
 
-        word_pool = custom_words if custom_words else ALL_WORDS
+        # Build pool: if custom_words provided, mix with random words from ALL_WORDS
+        word_pool = custom_words[:] if custom_words else []
+        if custom_words:
+            # Fill to have variety: mix some random global words
+            extra_needed = max(0, self.word_count * 2 - len(word_pool))
+            if extra_needed > 0 and ALL_WORDS:
+                sampled = random.sample(ALL_WORDS, min(extra_needed, len(ALL_WORDS)))
+                word_pool.extend(sampled)
+        else:
+            word_pool = ALL_WORDS
+
         self._generate(word_pool)
 
     def _generate(self, pool):
@@ -675,8 +752,9 @@ def start_game(chat_id, starter_id, mode="normal", is_hard=False, custom_words=N
             pass
         return None
 
-    session = GameSession(chat_id, mode, is_hard, custom_words)
-    games[chat_id] = session
+   session = GameSession(chat_id, mode, is_hard, custom_words)
+games[chat_id] = session
+session.game_id = db.log_game_start(chat_id, mode, session.size)
 
     user = db.get_user(starter_id)
     db.update_user(starter_id, games_played=user[4]+1)
@@ -785,7 +863,12 @@ def handle_guess(msg):
         return
 
     # mark who found which word
-    session.found[word] = uid
+    session.found[word] = uid 
+    if session.game_id:
+    try:
+        db.log_word_found(session.game_id, word, uid)
+    except Exception:
+        logger.exception("Failed to log word find")
 
     pts = 0
     bonuses = []
@@ -844,6 +927,13 @@ def handle_guess(msg):
 
         bot.send_message(cid, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts")
         del games[cid]
+        
+           if session.game_id:
+        try:
+           db.log_game_end(session.game_id, winner[0], winner[1])
+    except:
+          logger.exception("Failed to log game end")
+    del games[cid]
 
 # ══════════════════════════════════════════════════════════════════[...]
 # CHANNEL JOIN CHECK
@@ -1215,6 +1305,29 @@ def cmd_broadcast(m):
             fail += 1
     bot.reply_to(m, f"📢 Broadcast complete!\nSuccess: {success}\nFailed: {fail}")
 
+@bot.message_handler(commands=['markshoppaid'])
+def cmd_markshoppaid(m):
+    if not db.is_admin(m.from_user.id):
+        return
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /markshoppaid <purchase_id>")
+        return
+    try:
+        pid = int(args[1])
+        purchase = db.mark_shop_paid(pid)
+        if not purchase:
+            bot.reply_to(m, "Purchase not found.")
+            return
+        user_id, item_type, price = purchase
+        bot.reply_to(m, f"✅ Marked purchase {pid} as paid. Notifying user.")
+        try:
+            bot.send_message(user_id, f"✅ Your purchase #{pid} ({item_type}) has been marked PAID. Thank you!")
+        except Exception:
+            logger.debug("Could not notify purchaser")
+    except Exception as e:
+        bot.reply_to(m, f"Error: {e}")
+
 # ══════════════════════════════════════════════════════════════════[...]
 # PREMIUM ADMIN COMMANDS - NEW
 # ══════════════════════════════════════════════════════════════════[...]
@@ -1338,9 +1451,17 @@ def cmd_approvereview(m):
         review_id = int(args[1])
         db.approve_review(review_id)
         bot.reply_to(m, f"✅ Approved review {review_id}")
-    except:
-        bot.reply_to(m, "Invalid ID")
-
+        # notify reviewer
+        rv = db.get_review(review_id)
+        if rv:
+            reviewer_id = rv[1]
+            try:
+                bot.send_message(reviewer_id, "✅ Your review was approved and is now visible to others. Thank you!")
+            except:
+                logger.debug("Could not notify reviewer")
+    except Exception as e:
+        bot.reply_to(m, f"Invalid ID: {e}")
+        
 @bot.message_handler(commands=['delreview'])
 def cmd_delreview(m):
     if not db.is_admin(m.from_user.id):
@@ -1384,6 +1505,32 @@ def cmd_redeempay(m):
         bot.reply_to(m, f"✅ Marked request {request_id} as paid")
     except:
         bot.reply_to(m, "Invalid ID")
+        
+ @bot.message_handler(commands=['gamehistory'])
+def cmd_gamehistory(m):
+    # optional: /gamehistory me or /gamehistory all
+    args = m.text.split()
+    if len(args) > 1 and args[1].lower() == "all":
+        rows = db.get_game_history(None, limit=20)
+    else:
+        rows = db.get_game_history(m.from_user.id, limit=20)
+    if not rows:
+        bot.reply_to(m, "No games found.")
+        return
+    txt = "📜 <b>GAME HISTORY</b>\n\n"
+    for r in rows:
+        gid, chat_id, mode, size, start_time, end_time, winner_id, winner_score = r
+        txt += f"Game #{gid} • {mode} • {size}x{size}\nStart: {start_time}\nEnd: {end_time or 'ongoing'}\nWinner: {winner_id or 'N/A'} • {winner_score or 0}\n\n"
+    bot.reply_to(m, txt)
+
+  @bot.message_handler(func=lambda m: True, content_types=['text','photo','sticker'])
+def record_chat(m):
+    try:
+        if m.chat.type in ("group","supergroup"):
+            db.add_known_chat(m.chat.id, m.chat.title or "")
+    except:
+        pass
+    # do NOT block other handlers; this is light
 
 # ══════════════════════════════════════════════════════════════════[...]
 # TEXT HANDLERS
