@@ -421,9 +421,9 @@ class Database:
         c.execute("UPDATE shop_purchases SET status='paid' WHERE purchase_id=?", (purchase_id,))
         conn.commit()
     # fetch purchase to get user_id
-        c.execute("SELECT user_id, item_type, price FROM shop_purchases WHERE purchase_id=?", (purchase_id,))
-    r = c.fetchone()
-     conn.close()
+           c.execute("SELECT user_id, item_type, price FROM shop_purchases WHERE purchase_id=?", (purchase_id,))
+       r = c.fetchone()
+        conn.close()
          return r  # tuple or None
 
 
