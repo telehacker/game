@@ -42,8 +42,8 @@ if not TOKEN:
     print("❌ TELEGRAM_TOKEN not set")
     sys.exit(1)
 
-OWNER_ID = int(os.environ.get("OWNER_ID", "0")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "0")) or OWNER_ID
+OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
