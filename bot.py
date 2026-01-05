@@ -2312,7 +2312,18 @@ def handle_state(m):
 # ---------------------------
 # ForceReply handler for legacy "Found It!" flow (still supported)
 # ---------------------------
-@bot.message_handler(func=lambda m: m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text and m.text and not m.text.startswith('/'), [...]
+# Replace the broken decorator+handler with this valid code:
+
+@bot.message_handler(
+    func=lambda m: (
+        getattr(m, "reply_to_message", None) is not None
+        and isinstance(getattr(m.reply_to_message, "text", None), str)
+        and "Type the word you found" in m.reply_to_message.text
+        and m.text
+        and not m.text.startswith("/")
+    ),
+    content_types=['text']
+)
 def guess_reply_handler(m):
     try:
         handle_guess(m)
@@ -2320,7 +2331,7 @@ def guess_reply_handler(m):
         tb = traceback.format_exc()
         logger.exception("Error handling guess reply")
         try:
-            db.log_error("guess_reply_error", "Error handling guess reply", tb, context=f"chat:{m.chat.id}")
+            db.log_error("guess_reply_error", "Error handling guess reply", tb, context=f"chat:{getattr(m, 'chat', {}).id if getattr(m, 'chat', None) else 'unknown'}")
         except Exception:
             pass
 
