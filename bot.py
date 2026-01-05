@@ -1962,6 +1962,36 @@ def cmd_issue_error(m):
     except Exception as e:
         bot.reply_to(m, f"Invalid id: {e}")
 
+@bot.message_handler(commands=['ai_add'])
+def ai_add(message):
+    if not db.is_admin(message.from_user.id):
+        bot.reply_to(message, "❌ Only admins can add features.")
+        return
+
+    idea = message.text.replace("/ai_add", "").strip()
+    if not idea:
+        bot.reply_to(message, "⚠️ Please provide a feature description.")
+        return
+
+    try:
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are a Python bot developer."},
+                {"role": "user", "content": f"Generate a Python function to {idea}. Keep it self-contained."}
+            ]
+        }
+        r = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
+        data = r.json()
+        code = data['choices'][0]['message']['content']
+
+        pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
+        bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{html.escape(code[:500])}</pre>", parse_mode="HTML")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ AI error: {e}")
+
 # ---------------------------
 # FEATURE PACK UPLOAD (owner-only, safe JSON)
 # ---------------------------
