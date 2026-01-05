@@ -916,7 +916,7 @@ class GameSession:
         self._generate(word_pool)
 
     def _generate(self, pool):
-        valid = [w for w in pool if isinstance(w, str) and 4 <= len(w) <= 9]
+        valid = [w for w in pool if isinstance(w, str) and 4 <= len(w) <= 8]
         if len(valid) < self.word_count:
             valid = (valid * ((self.word_count // max(1, len(valid))) + 2))[:max(self.word_count, len(valid))]
         self.words = random.sample(valid, min(self.word_count, len(valid)))
