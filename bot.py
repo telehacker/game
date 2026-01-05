@@ -1985,15 +1985,17 @@ def ai_add(message):
         r = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
         data = r.json()
 
-        # ✅ Correct parsing
-        code = data['choices'][0]['message']['content'].strip()
+        # ✅ Safe check
+        if "choices" not in data or not data["choices"]:
+            bot.reply_to(message, "❌ AI response missing 'choices'. Check your API key or quota.")
+            return
 
+        code = data['choices'][0]['message']['content'].strip()
         pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
         bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{html.escape(code[:500])}</pre>", parse_mode="HTML")
 
     except Exception as e:
         bot.reply_to(message, f"❌ AI error: {e}")
-
 
 # ---------------------------
 # FEATURE PACK UPLOAD (owner-only, safe JSON)
