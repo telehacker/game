@@ -143,7 +143,7 @@ class Database:
         return sqlite3.connect(self.db, check_same_thread=False)
 
     def _init(self):
-    conn = self._conn()
+         conn = self._conn()
     c = conn.cursor()
 
     # users table
