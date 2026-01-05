@@ -143,61 +143,75 @@ class Database:
         return sqlite3.connect(self.db, check_same_thread=False)
 
     def _init(self):
-        conn = self._conn()
-        c = conn.cursor()
+    conn = self._conn()
+    c = conn.cursor()
 
-        c.execute("""CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY, name TEXT, username TEXT,
-            join_date TEXT, games_played INTEGER DEFAULT 0,
-            wins INTEGER DEFAULT 0, total_score INTEGER DEFAULT 0,
-            hint_balance INTEGER DEFAULT 100, gems INTEGER DEFAULT 0,
-            level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0,
-            streak INTEGER DEFAULT 0, last_daily TEXT,
-            referrer_id INTEGER, is_premium INTEGER DEFAULT 0, premium_expiry TEXT,
-            is_banned INTEGER DEFAULT 0, achievements TEXT DEFAULT '[]',
-            words_found INTEGER DEFAULT 0, verified INTEGER DEFAULT 0
-        )""")
+    # users table
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY, name TEXT, username TEXT,
+        join_date TEXT, games_played INTEGER DEFAULT 0,
+        wins INTEGER DEFAULT 0, total_score INTEGER DEFAULT 0,
+        hint_balance INTEGER DEFAULT 100, gems INTEGER DEFAULT 0,
+        level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0,
+        streak INTEGER DEFAULT 0, last_daily TEXT,
+        referrer_id INTEGER, is_premium INTEGER DEFAULT 0, premium_expiry TEXT,
+        is_banned INTEGER DEFAULT 0, achievements TEXT DEFAULT '[]',
+        words_found INTEGER DEFAULT 0, verified INTEGER DEFAULT 0
+    )""")
 
-        c.execute("CREATE TABLE IF NOT EXISTS admins (admin_id INTEGER PRIMARY KEY)")
+    # admins
+    c.execute("CREATE TABLE IF NOT EXISTS admins (admin_id INTEGER PRIMARY KEY)")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS shop_purchases (
-            purchase_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, item_type TEXT, price REAL, 
-            status TEXT DEFAULT 'pending', date TEXT
-        )""")
+    # shop purchases
+    c.execute("""CREATE TABLE IF NOT EXISTS shop_purchases (
+        purchase_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, item_type TEXT, price REAL, 
+        status TEXT DEFAULT 'pending', date TEXT
+    )""")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS reviews (
-            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, username TEXT, text TEXT,
-            rating INTEGER, created_at TEXT, approved INTEGER DEFAULT 0
-        )""")
+    # reviews
+    c.execute("""CREATE TABLE IF NOT EXISTS reviews (
+        review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, username TEXT, text TEXT,
+        rating INTEGER, created_at TEXT, approved INTEGER DEFAULT 0
+    )""")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS redeem_requests (
-            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, username TEXT, points INTEGER,
-            amount_inr INTEGER, upi_id TEXT, status TEXT DEFAULT 'pending',
-            created_at TEXT, paid_at TEXT
-        )""")
+    # redeem requests
+    c.execute("""CREATE TABLE IF NOT EXISTS redeem_requests (
+        request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, username TEXT, points INTEGER,
+        amount_inr INTEGER, upi_id TEXT, status TEXT DEFAULT 'pending',
+        created_at TEXT, paid_at TEXT
+    )""")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS referrals (
-            referral_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER, referred_id INTEGER,
-            created_at TEXT, UNIQUE(referrer_id, referred_id)
-        )""")
+    # referrals
+    c.execute("""CREATE TABLE IF NOT EXISTS referrals (
+        referral_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        referrer_id INTEGER, referred_id INTEGER,
+        created_at TEXT, UNIQUE(referrer_id, referred_id)
+    )""")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS games (
-            game_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER, mode TEXT, size INTEGER,
-           start_time TEXT, end_time TEXT, winner_id INTEGER, winner_score INTEGER
-       )""")
+    # NEW: games history
+    c.execute("""CREATE TABLE IF NOT EXISTS games (
+        game_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER, mode TEXT, size INTEGER,
+        start_time TEXT, end_time TEXT, winner_id INTEGER, winner_score INTEGER
+    )""")
 
-     c.execute("""CREATE TABLE IF NOT EXISTS game_finds (
-         id INTEGER PRIMARY KEY AUTOINCREMENT,
-         game_id INTEGER, word TEXT, finder_id INTEGER, found_at TEXT
-      )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS game_finds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        game_id INTEGER, word TEXT, finder_id INTEGER, found_at TEXT
+    )""")
 
-        conn.commit()
-        conn.close()
+    # NEW: known chats for broadcasts
+    c.execute("""CREATE TABLE IF NOT EXISTS known_chats (
+        chat_id INTEGER PRIMARY KEY,
+        title TEXT,
+        first_seen TEXT
+    )""")
+
+    conn.commit()
+    conn.close()
 
     def get_user(self, user_id: int, name: str = "Player", username: str = ""):
         conn = self._conn()
