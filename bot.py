@@ -53,7 +53,7 @@ START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-
 GITHUB_TOKEN = os.environ.get("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")
 REPO_OWNER = os.environ.get("telehacker") or os.environ.get("telehacker")
 REPO_NAME = os.environ.get("game") or os.environ.get("game")
-OPENAI_API_KEY = os.environ.get("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")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "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")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
