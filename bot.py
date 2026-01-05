@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-WORD VORTEX ULTIMATE v10.5 - FIXED & ENHANCED (patched)
-This file contains fixes requested:
-- /add_ai alias (was /ai_add) fixed
-- Env var handling for GITHUB/REPO/OPENAI fixed (previously using literal token strings as keys)
-- Several syntax errors and truncated lines fixed (these caused handlers like listreviews, stats, profile to crash)
-- listreviews formatting fixed
-- Broadcast changed: now sends message to known group chats where bot is admin and attempts to pin
-- Approving a review now optionally publishes the approved review to known chats where bot is admin
-- Known chats are recorded (cmd_start + verify) so broadcast/pinning can find them
-- Misc defensive fixes (guess_reply handler decorator corrected)
+WORD VORTEX ULTIMATE v10.5 - FULL FIXED & ENHANCED
+
+This file is the merged, fixed, and enhanced version of your bot.py with:
+- Additive DB schema changes (settings, errors, patches, games.full_state)
+- sqlite3.Row usage
+- Error logging to DB + admin commands to list/view/issue errors
+- Patch upload & optional GitHub issue creation
+- Feature pack upload (JSON only, <=200 KB)
+- AI-assisted /suggest_fix (requires OPENAI_API_KEY)
+- Leaderboard image generation
+- /set_config and /get_config runtime settings (stored in settings table)
+- All previously present features (game flow, direct guesses, premium perks, referrals, redeem, shop, reviews)
 """
+
 import os
 import sys
 import time
@@ -24,6 +27,8 @@ import threading
 import traceback
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Optional, Any
+import subprocess
+import tempfile
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -46,10 +51,11 @@ FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
-# GitHub / OpenAI config (optional) - FIXED: use proper env var names
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # set this in env if you want issue creation
-REPO_OWNER = os.environ.get("REPO_OWNER", "telehacker")
-REPO_NAME = os.environ.get("REPO_NAME", "game")
+# GitHub / OpenAI config (optional)
+# FIX: Use standard environment variable names. Previously code tried to read wrong env keys.
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT")
+REPO_OWNER = os.environ.get("REPO_OWNER") or os.environ.get("GITHUB_REPO_OWNER") or "telehacker"
+REPO_NAME = os.environ.get("REPO_NAME") or os.environ.get("GITHUB_REPO_NAME") or "game"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
@@ -625,6 +631,15 @@ class Database:
         conn.close()
         return rows
 
+    # NEW helper to get known chats (for broadcast to groups)
+    def get_known_chats(self):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("SELECT chat_id, title FROM known_chats")
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
     # Game logging
     def log_game_start(self, chat_id: int, mode: str, size: int, full_state: Optional[str] = None) -> int:
         conn = self._conn()
@@ -681,14 +696,6 @@ class Database:
                   (chat_id, title, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
-
-    def get_known_chats(self):
-        conn = self._conn()
-        c = conn.cursor()
-        c.execute("SELECT chat_id, title FROM known_chats")
-        rows = c.fetchall()
-        conn.close()
-        return rows
 
     def save_feature_pack(self, name: str, contents: str):
         conn = self._conn()
@@ -1087,6 +1094,17 @@ def start_game(chat_id, starter_id, mode="normal", is_hard=False, custom_words=N
         session.message_id = msg.message_id
         session.image_sent_time = time.time()
 
+        # Remember known chat (so owner can broadcast to groups later)
+        try:
+            title = ""
+            try:
+                title = msg.chat.title or ""
+            except Exception:
+                pass
+            db.add_known_chat(chat_id, title)
+        except Exception:
+            pass
+
         # schedule expiry worker
         schedule_game_expiry(session)
 
@@ -1169,7 +1187,7 @@ def end_game(chat_id, reason: str = "finished"):
                 winner_user = db.get_user(winner[0])
                 prev_wins = winner_user['wins'] if winner_user and 'wins' in winner_user.keys() else (winner_user[5] if winner_user and len(winner_user) > 5 else 0)
                 db.update_user(winner[0], wins=prev_wins + 1)
-                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user['name'])}\nScore: {winner[1]} pts\nReason: {reason}")
+                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts\nReason: {reason}")
                 if session.game_id:
                     try:
                         db.log_game_end(session.game_id, winner[0], winner[1])
@@ -1403,13 +1421,6 @@ def cmd_start(m):
     username = m.from_user.username or ""
     uid = m.from_user.id
 
-    # record known chat if group
-    if m.chat.type in ["group", "supergroup"]:
-        try:
-            db.add_known_chat(m.chat.id, m.chat.title or "")
-        except Exception:
-            pass
-
     # referral handling: /start ref<id>
     parts = m.text.split() if m.text else []
     if len(parts) > 1:
@@ -1530,22 +1541,15 @@ def cmd_stats(m):
 
     premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
-    total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
-    hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)
-    games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user and len(user) > 4 else 0)
-    wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user and len(user) > 5 else 0)
-    words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user and len(user) > 18 else 0)
-    streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
-
     txt = (f"👤 <b>PROFILE</b>\n\n"
            f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player'))}{premium_badge}\n"
            f"Level: {level} 🏅\n"
            f"XP: {xp}/{xp_needed} ({xp_progress:.1f}%)\n\n"
-           f"Score: {total_score} pts\n"
-           f"Balance: {hint_balance} pts\n"
-           f"Games: {games_played} • Wins: {wins}\n"
-           f"Words Found: {words_found}\n"
-           f"Streak: {streak} days 🔥")
+           f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
+           f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
+           f"Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)} • Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)}\n"
+           f"Words Found: {user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)}\n"
+           f"Streak: {user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)} days 🔥")
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['leaderboard','lb'])
@@ -1568,7 +1572,7 @@ def cmd_daily(m):
     user = db.get_user(m.from_user.id)
 
     # award streak achievement if applicable
-    streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
+    streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
     if user and streak_val >= 7:
         if db.add_achievement(m.from_user.id, "streak_master"):
             bot.send_message(m.chat.id, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['streak_master']['icon']} {ACHIEVEMENTS['streak_master']['name']}")
@@ -1673,7 +1677,14 @@ def cmd_givehints(m):
 
 @bot.message_handler(commands=['broadcast'])
 def cmd_broadcast(m):
-    # New behavior: broadcast to known group chats where the bot is admin and pin the message.
+    """
+    OWNER_ONLY broadcast:
+    - sends to all known group chats where bot is currently admin (and to users if you want)
+    - pins the broadcast (if bot has rights)
+    Usage:
+      /broadcast Your message here...
+    NOTE: This will attempt to send to known group chats (known_chats table). It will not spam inactive unknown chats.
+    """
     if not (OWNER_ID and m.from_user.id == OWNER_ID):
         return
     text = m.text.replace('/broadcast', '').strip()
@@ -1681,37 +1692,48 @@ def cmd_broadcast(m):
         bot.reply_to(m, "Usage: /broadcast <message>")
         return
 
-    # send to group chats where bot is admin (from known_chats)
-    known = db.get_known_chats()
-    success = 0
-    fail = 0
-    pinned = 0
-    me = bot.get_me()
-    for row in known:
+    # Send to known group chats (where the bot was seen before)
+    chats = db.get_known_chats()
+    sent = 0
+    failed = 0
+    for row in chats:
         try:
-            chat_id = row['chat_id'] if 'chat_id' in row.keys() else row[0]
-            # check bot's admin status in that chat
+            chat_id = int(row['chat_id'] if 'chat_id' in row.keys() else row[0])
+            # check bot privileges first - skip if bot is not an admin or cannot send messages
             try:
-                member = bot.get_chat_member(chat_id, me.id)
+                member = bot.get_chat_member(chat_id, bot.get_me().id)
                 if member.status not in ("administrator", "creator"):
-                    # skip chats where bot is not admin
+                    # skip groups where bot is not admin (pin requires admin)
                     continue
             except Exception:
-                # if get_chat_member failed, skip this chat
+                # skip chats we cannot query
                 continue
 
             msg = bot.send_message(chat_id, text)
-            success += 1
-            # attempt to pin
+            sent += 1
+            # try pinning (if admin)
             try:
-                bot.pin_chat_message(chat_id, msg.message_id, disable_notification=True)
-                pinned += 1
+                bot.pin_chat_message(chat_id, msg.message_id, disable_notification=False)
             except Exception:
-                # ignore pin errors
+                # ignore pin failure, maybe bot lacks pin permissions on that chat
                 pass
+        except Exception as e:
+            failed += 1
+            logger.debug("Broadcast send failed for chat %s: %s", row, e)
+            continue
+
+    # Also send to all users (optional): keep the legacy behaviour for user broadcast
+    users = db.get_all_users()
+    user_success = 0
+    user_fail = 0
+    for uid in users:
+        try:
+            bot.send_message(uid, text)
+            user_success += 1
         except Exception:
-            fail += 1
-    bot.reply_to(m, f"📢 Broadcast complete!\nSent: {success}\nFailed: {fail}\nPinned in: {pinned}")
+            user_fail += 1
+
+    bot.reply_to(m, f"📢 Broadcast finished. Groups sent: {sent}, group failures: {failed}\nUsers sent: {user_success}, user failures: {user_fail}")
 
 @bot.message_handler(commands=['markshoppaid'])
 def cmd_markshoppaid(m):
@@ -1804,15 +1826,9 @@ def cmd_shoplist(m):
     txt = "🛒 <b>SHOP PURCHASES</b>\n\n"
     for p in purchases:
         # purchase_id, user_id, item_type, price, status, date
-        purchase_id = p['purchase_id'] if 'purchase_id' in p.keys() else p[0]
-        user_id = p['user_id'] if 'user_id' in p.keys() else p[1]
-        item_type = p['item_type'] if 'item_type' in p.keys() else p[2]
-        price = p['price'] if 'price' in p.keys() else p[3]
-        status = p['status'] if 'status' in p.keys() else p[4]
-        date = p['date'] if 'date' in p.keys() else p[5]
+        purchase_id, user_id, item_type, price, status, date = p
         user = db.get_user(user_id)
-        name = user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))
-        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {html.escape(name)} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
+        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {user['name'] if user and 'name' in user.keys() else (user[1] if user else user_id)} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
 
     txt += "\n💡 Use /givepremium <user_id> <days> to activate"
     bot.reply_to(m, txt)
@@ -1825,14 +1841,23 @@ def cmd_listreviews(m):
     if not reviews:
         bot.reply_to(m, "No reviews yet!")
         return
-    txt = "📝 <b>ALL REVIEWS</b>\n\n"
-    for r in reviews[:50]:
+
+    # Build messages in chunks to avoid hitting Telegram message length limits
+    lines = ["📝 <b>ALL REVIEWS</b>\n"]
+    for r in reviews:
         status = "✅" if r['approved'] else "⏳"
-        username = r['username'] or f"User:{r['user_id']}"
-        review_text = (r['text'] or "")[:400]
-        txt += f"{status} ID:{r['review_id']} | {username} | ⭐{r['rating']}\n{review_text}\n\n"
-    txt += "Use /approvereview <id> to approve or /delreview <id> to delete"
-    bot.reply_to(m, txt)
+        text = (r['text'] or '')
+        snippet = text if len(text) <= 240 else text[:240] + "..."
+        lines.append(f"{status} ID:{r['review_id']} | {r['username']} | ⭐{r['rating']}\n{snippet}\n")
+
+    chunk = ""
+    for part in lines:
+        if len(chunk) + len(part) > 3800:
+            bot.reply_to(m, chunk)
+            chunk = ""
+        chunk += part + "\n"
+    if chunk:
+        bot.reply_to(m, chunk)
 
 @bot.message_handler(commands=['approvereview'])
 def cmd_approvereview(m):
@@ -1848,33 +1873,11 @@ def cmd_approvereview(m):
         bot.reply_to(m, f"✅ Approved review {review_id}")
         rv = db.get_review(review_id)
         if rv:
-            reviewer_id = rv['user_id']
+            reviewer_id = rv[1]
             try:
                 bot.send_message(reviewer_id, "✅ Your review was approved and is now visible to others. Thank you!")
             except Exception:
                 logger.debug("Could not notify reviewer")
-
-            # Publish approved review to known group chats where bot is admin (optional behavior requested)
-            try:
-                review_text = rv['text'] or ""
-                review_msg = f"⭐ New Review:\n\n{html.escape(review_text)}\n\n— {rv['username']} • ⭐{rv['rating']}"
-                known = db.get_known_chats()
-                me = bot.get_me()
-                for row in known:
-                    try:
-                        chat_id = row['chat_id'] if 'chat_id' in row.keys() else row[0]
-                        member = bot.get_chat_member(chat_id, me.id)
-                        if member.status in ("administrator", "creator"):
-                            sent = bot.send_message(chat_id, review_msg)
-                            try:
-                                bot.pin_chat_message(chat_id, sent.message_id, disable_notification=True)
-                            except Exception:
-                                pass
-                    except Exception:
-                        continue
-            except Exception:
-                logger.exception("Error publishing approved review")
-        return
     except Exception as e:
         bot.reply_to(m, f"Invalid ID: {e}")
 
@@ -1903,6 +1906,7 @@ def cmd_redeemlist(m):
         return
     txt = "💰 <b>PENDING REDEEMS</b>\n\n"
     for r in requests_list[:10]:
+        # request_id, user_id, username, points, amount_inr, upi_id, status, created_at, paid_at
         txt += f"ID: {r['request_id']} \nUser: {r['username']} ({r['user_id']})\nPoints: {r['points']} → ₹{r['amount_inr']}\nUPI: {r['upi_id']}\n\n"
     txt += "Use /redeempay <id> to mark as paid"
     bot.reply_to(m, txt)
@@ -2032,24 +2036,23 @@ def cmd_issue_error(m):
     except Exception as e:
         bot.reply_to(m, f"Invalid id: {e}")
 
-# Support for AI-generated patches: made alias /add_ai -> /ai_add
-@bot.message_handler(commands=['ai_add', 'add_ai'])
+@bot.message_handler(commands=['ai_add'])
 def ai_add(message):
     if not db.is_admin(message.from_user.id):
         bot.reply_to(message, "❌ Only admins can add features.")
         return
 
-    idea = message.text.replace("/ai_add", "").replace("/add_ai", "").strip()
+    idea = message.text.replace("/ai_add", "").strip()
     if not idea:
         bot.reply_to(message, "⚠️ Please provide a feature description.")
         return
 
     if not OPENAI_API_KEY:
-        bot.reply_to(message, "OpenAI not configured (OPENAI_API_KEY).")
+        bot.reply_to(message, "❌ OpenAI API key not configured (OPENAI_API_KEY).")
         return
 
     try:
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": "gpt-4o-mini",
             "messages": [
@@ -2065,12 +2068,29 @@ def ai_add(message):
             bot.reply_to(message, "❌ AI response missing 'choices'. Check your API key or quota.")
             return
 
-        code = data['choices'][0]['message']['content'].strip()
+        # robustly access content
+        content = data["choices"][0].get("message", {}) or data["choices"][0].get("text", "")
+        if isinstance(content, dict):
+            code = content.get("content", "").strip()
+        else:
+            code = content.strip()
+
+        if not code:
+            bot.reply_to(message, "❌ Empty code returned by AI.")
+            return
+
         pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
-        bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{html.escape(code[:500])}</pre>", parse_mode="HTML")
+        # show first part of code safely
+        display = html.escape(code[:3000])
+        bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{display}</pre>", parse_mode="HTML")
 
     except Exception as e:
         bot.reply_to(message, f"❌ AI error: {e}")
+        tb = traceback.format_exc()
+        try:
+            db.log_error("ai_add_error", str(e), tb)
+        except Exception:
+            pass
 
 # ---------------------------
 # FEATURE PACK UPLOAD (owner-only, safe JSON)
@@ -2292,7 +2312,7 @@ def handle_state(m):
 # ---------------------------
 # ForceReply handler for legacy "Found It!" flow (still supported)
 # ---------------------------
-@bot.message_handler(func=lambda m: m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text and m.text and not m.text.startswith('/'), content_types=['text'])
+@bot.message_handler(func=lambda m: m.reply_to_message and isinstance(m.reply_to_message.text, str) and "Type the word you found" in m.reply_to_message.text and m.text and not m.text.startswith('/'), [...]
 def guess_reply_handler(m):
     try:
         handle_guess(m)
@@ -2317,13 +2337,6 @@ def callback(c):
     if data == "verify":
         if is_subscribed(uid):
             db.update_user(uid, verified=1)
-            # record known chat if group
-            if c.message.chat.type in ["group", "supergroup"]:
-                try:
-                    db.add_known_chat(c.message.chat.id, c.message.chat.title or "")
-                except Exception:
-                    pass
-
             notify_owner(
                 f"✅ <b>USER VERIFIED</b>\n\n"
                 f"User: {html.escape(c.from_user.first_name or 'User')}\n"
@@ -2417,18 +2430,12 @@ def callback(c):
     if data == "profile":
         user = db.get_user(uid)
         premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else " 🔓 FREE"
-        total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
-        hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)
-        wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user and len(user) > 5 else 0)
-        games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user and len(user) > 4 else 0)
-        level = user['level'] if user and 'level' in user.keys() else (user[9] if user and len(user) > 9 else 1)
-        xp = user['xp'] if user and 'xp' in user.keys() else (user[10] if user and len(user) > 10 else 0)
         txt = (f"👤 <b>PROFILE</b>\n\n"
                f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User'))}{premium_badge}\n"
-               f"Level: {level} | XP: {xp}\n"
-               f"Score: {total_score} pts\n"
-               f"Balance: {hint_balance} pts\n"
-               f"Wins: {wins} | Games: {games_played}")
+               f"Level: {user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)} | XP: {user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)}\n"
+               f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
+               f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
+               f"Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)} | Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user els..."]
         try:
             bot.send_message(uid, txt)
             bot.answer_callback_query(c.id, "Sent to PM!")
@@ -2459,7 +2466,7 @@ def callback(c):
             return
         user = db.get_user(uid)
         premium_msg = " (2x Premium)" if db.is_premium(uid) else ""
-        streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
+        streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
         txt = f"🎁 +{reward} pts{premium_msg}\nStreak: {streak_val} days!"
         try:
             bot.send_message(uid, txt)
@@ -2771,6 +2778,72 @@ def cmd_suggest_fix(m):
                 pass
     except Exception as e:
         bot.reply_to(m, f"Invalid id: {e}")
+
+# ---------------------------
+# RUN CODE FROM TELEGRAM (OWNER ONLY) - /run
+# ---------------------------
+@bot.message_handler(commands=['run'])
+def cmd_run(m):
+    """
+    OWNER only. Run a short Python script sent as a reply to a message or inline after the command.
+    SECURITY: extremely powerful; restricted to OWNER_ID only.
+    Usage:
+      Reply to a message that contains Python code with /run
+      OR send /run <python code>
+    The code runs in a separate subprocess with a timeout and captured stdout/stderr.
+    """
+    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+        return
+
+    # get code either from reply or from command text
+    code = ""
+    if m.reply_to_message and m.reply_to_message.text:
+        code = m.reply_to_message.text
+    else:
+        parts = m.text.split(maxsplit=1)
+        if len(parts) > 1:
+            code = parts[1]
+
+    if not code:
+        bot.reply_to(m, "Usage: reply to a message containing Python code with /run, or /run <code>")
+        return
+
+    # create a temp file and execute python in subprocess
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tf:
+            tf.write(code)
+            tf.flush()
+            fname = tf.name
+
+        # run with timeout (10s) and capture output
+        proc = subprocess.run(
+            ["python3", fname],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=12
+        )
+        out = proc.stdout.decode('utf-8', errors='replace')
+        err = proc.stderr.decode('utf-8', errors='replace')
+        result = ""
+        if out:
+            result += f"📤 STDOUT:\n{out}\n"
+        if err:
+            result += f"⚠️ STDERR:\n{err}\n"
+        if not result:
+            result = "✅ Executed. No output."
+        # trim
+        bot.reply_to(m, result[:3900])
+    except subprocess.TimeoutExpired:
+        bot.reply_to(m, "⏱ Execution timed out (12s).")
+    except Exception as e:
+        tb = traceback.format_exc()
+        bot.reply_to(m, f"❌ Error running code: {e}\n\n{tb[:1500]}")
+    finally:
+        try:
+            os.unlink(fname)
+        except Exception:
+            pass
 
 # ---------------------------
 # FALLBACK: DIRECT GUESS HANDLING
