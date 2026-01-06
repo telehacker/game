@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """
-WORD VORTEX ULTIMATE v10.5 - FULL FIXED & ENHANCED
+WORD VORTEX ULTIMATE v10.5 - FIXED & ENHANCED (syntax + runtime robustness fixes)
 
-This file is the merged, fixed, and enhanced version of your bot.py with:
-- Additive DB schema changes (settings, errors, patches, games.full_state)
-- sqlite3.Row usage
-- Error logging to DB + admin commands to list/view/issue errors
-- Patch upload & optional GitHub issue creation
-- Feature pack upload (JSON only, <=200 KB)
-- AI-assisted /suggest_fix (requires OPENAI_API_KEY)
-- Leaderboard image generation
-- /set_config and /get_config runtime settings (stored in settings table)
-- All previously present features (game flow, direct guesses, premium perks, referrals, redeem, shop, reviews)
+See commit message for summary of fixes applied in this file.
 """
 
 import os
@@ -44,15 +35,14 @@ if not TOKEN:
     print("❌ TELEGRAM_TOKEN not set")
     sys.exit(1)
 
-OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
+OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) if os.environ.get("OWNER_ID") else 8271254197
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) if os.environ.get("NOTIFICATION_GROUP") else OWNER_ID
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
 # GitHub / OpenAI config (optional)
-# FIX: Use standard environment variable names. Previously code tried to read wrong env keys.
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT")
 REPO_OWNER = os.environ.get("REPO_OWNER") or os.environ.get("GITHUB_REPO_OWNER") or "telehacker"
 REPO_NAME = os.environ.get("REPO_NAME") or os.environ.get("GITHUB_REPO_NAME") or "game"
@@ -92,10 +82,22 @@ REFERRAL_MIN_WORDS = 3
 # Bad words set for review moderation
 BAD_WORDS = {"SEX", "PORN", "NUDE", "XXX", "DICK", "COCK", "PUSSY", "FUCK", "SHIT", "BITCH", "ASS", "HENTAI", "BOOBS"}
 
-# Minimal ACHIEVEMENTS definition (extend if you want)
+# Expanded ACHIEVEMENTS definition
 ACHIEVEMENTS = {
     "streak_master": {"icon": "🏆", "name": "Streak Master", "desc": "Claim daily 7 days in a row", "reward": 500},
     "first_blood": {"icon": "⚡", "name": "First Blood", "desc": "Get first find in a game", "reward": 50},
+    "word_hunter_10": {"icon": "🔎", "name": "Word Hunter I", "desc": "Find 10 words total", "reward": 50},
+    "word_hunter_100": {"icon": "🕵️", "name": "Word Hunter II", "desc": "Find 100 words total", "reward": 300},
+    "game_winner_1": {"icon": "🥇", "name": "Winner I", "desc": "Win 1 game", "reward": 30},
+    "game_winner_10": {"icon": "🏅", "name": "Winner II", "desc": "Win 10 games", "reward": 200},
+    "combo_beginner": {"icon": "🔥", "name": "Combo Starter", "desc": "Get a combo of 2 in a game", "reward": 20},
+    "combo_master": {"icon": "💥", "name": "Combo Master", "desc": "Get a combo of 5 in a game", "reward": 250},
+    "speedster": {"icon": "⚡", "name": "Speedster", "desc": "Find a word within 5 seconds of grid", "reward": 75},
+    "collector_1": {"icon": "📦", "name": "Collector I", "desc": "Collect 500 total points", "reward": 100},
+    "collector_2": {"icon": "📦", "name": "Collector II", "desc": "Collect 2000 total points", "reward": 500},
+    "social_butterfly": {"icon": "🤝", "name": "Social Butterfly", "desc": "Invite 5 users who verify", "reward": 300},
+    "daily_30": {"icon": "📆", "name": "Daily Addict I", "desc": "Claim daily 30 times", "reward": 400},
+    "perfectionist": {"icon": "🎯", "name": "Perfectionist", "desc": "Find all words in 10 games", "reward": 600},
 }
 
 # Creative messages
@@ -171,8 +173,7 @@ class Database:
         self._init()
 
     def _conn(self):
-        # Increase timeout to reduce "database is locked" errors in concurrent environments.
-        conn = sqlite3.connect(self.db, check_same_thread=False, timeout=30)
+        conn = sqlite3.connect(self.db, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -383,7 +384,7 @@ class Database:
 
     def add_achievement(self, user_id: int, ach_id: str) -> bool:
         user = self.get_user(user_id)
-        achievements_json = user['achievements'] if 'achievements' in user.keys() else (user[17] if user and len(user) > 17 and user[17] else "[]")
+        achievements_json = user['achievements'] if user and 'achievements' in user.keys() else "[]"
         achievements = json.loads(achievements_json)
         if ach_id in achievements:
             return False
@@ -523,7 +524,6 @@ class Database:
             # create award tracking row (not awarded yet)
             c.execute("""INSERT OR IGNORE INTO referral_awards (referrer_id, referred_id, awarded) VALUES (?, ?, 0)""",
                       (referrer_id, referred_id))
-            # Do NOT credit referrer yet; will be done when referred user meets activity threshold.
             conn.commit()
             conn.close()
             return True
@@ -559,7 +559,7 @@ class Database:
         if not urow:
             conn.close()
             return False
-        # using name-based access when possible
+
         games_played = urow['games_played'] if 'games_played' in urow.keys() else (urow[4] if len(urow) > 4 else 0)
         words_found = urow['words_found'] if 'words_found' in urow.keys() else (urow[18] if len(urow) > 18 else 0)
         verified = urow['verified'] if 'verified' in urow.keys() else (urow[19] if len(urow) > 19 else 0)
@@ -593,8 +593,8 @@ class Database:
         if not row:
             conn.close()
             return False, 0
-        last_daily = row['last_daily'] if 'last_daily' in row.keys() else (row[12] if len(row) > 12 else None)
-        streak = row['streak'] if 'streak' in row.keys() else (row[11] if len(row) > 11 else 0)
+        last_daily = row['last_daily'] if 'last_daily' in row.keys() else None
+        streak = row['streak'] if 'streak' in row.keys() else 0
 
         today = datetime.now().strftime("%Y-%m-%d")
         if last_daily == today:
@@ -717,44 +717,21 @@ class Database:
         return pid
 
     def log_error(self, error_type: str, message: str, tb: str = "", context: str = ""):
-        """
-        Robust error logger: retry on sqlite3.OperationalError (database is locked).
-        Returns inserted error_id or None on failure.
-        """
-        attempts = 3
-        last_exc = None
-        for attempt in range(attempts):
-            try:
-                conn = self._conn()
-                c = conn.cursor()
-                c.execute("""INSERT INTO errors (error_type, message, tb, context, created_at)
-                             VALUES (?, ?, ?, ?, ?)""",
-                          (error_type, message, tb, context, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                conn.commit()
-                eid = c.lastrowid
-                conn.close()
-                return eid
-            except sqlite3.OperationalError as e:
-                last_exc = e
-                # common cause: database is locked, wait and retry
-                time.sleep(0.2)
-                continue
-            except Exception as e:
-                # log to standard logger as fallback
-                logger.exception("Failed to write error to DB: %s", e)
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                return None
-        # All attempts failed
-        logger.exception("log_error failed after retries: %s", last_exc)
-        return None
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("""INSERT INTO errors (error_type, message, tb, context, created_at)
+                     VALUES (?, ?, ?, ?, ?)""",
+                  (error_type, message, tb, context, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        eid = c.lastrowid
+        conn.close()
+        return eid
 
     # settings helpers
     def set_setting(self, key: str, value: str):
         conn = self._conn()
         c = conn.cursor()
+        # Use upsert supported syntax
         c.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                   (key, value, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
@@ -880,25 +857,28 @@ class ImageRenderer:
         # Thin lines for found words
         if placements and found:
             for word, coords in placements.items():
-                if word in found and coords:
-                    finder = found.get(word)
-                    is_prem = db.is_premium(finder) if finder else False
+                try:
+                    if word in found and coords:
+                        finder = found.get(word)
+                        is_prem = db.is_premium(finder) if finder else False
 
-                    a, b = coords[0], coords[-1]
-                    x1 = pad + a[1]*cell + cell//2
-                    y1 = grid_y + a[0]*cell + cell//2
-                    x2 = pad + b[1]*cell + cell//2
-                    y2 = grid_y + b[0]*cell + cell//2
+                        a, b = coords[0], coords[-1]
+                        x1 = pad + a[1]*cell + cell//2
+                        y1 = grid_y + a[0]*cell + cell//2
+                        x2 = pad + b[1]*cell + cell//2
+                        y2 = grid_y + b[0]*cell + cell//2
 
-                    if is_prem or theme == "gold":
-                        draw.line([(x1,y1),(x2,y2)], fill="#ffd700", width=4)
-                        draw.line([(x1,y1),(x2,y2)], fill="#fff2a6", width=1)
-                    else:
-                        draw.line([(x1,y1),(x2,y2)], fill="#ffff99", width=3)
-                        draw.line([(x1,y1),(x2,y2)], fill="#ffeb3b", width=1)
+                        if is_prem or theme == "gold":
+                            draw.line([(x1,y1),(x2,y2)], fill="#ffd700", width=4)
+                            draw.line([(x1,y1),(x2,y2)], fill="#fff2a6", width=1)
+                        else:
+                            draw.line([(x1,y1),(x2,y2)], fill="#ffff99", width=3)
+                            draw.line([(x1,y1),(x2,y2)], fill="#ffeb3b", width=1)
 
-                    for px, py in [(x1,y1),(x2,y2)]:
-                        draw.ellipse([px-5, py-5, px+5, py+5], fill="#ffeb3b" if not is_prem else "#ffd700")
+                        for px, py in [(x1,y1),(x2,y2)]:
+                            draw.ellipse([px-5, py-5, px+5, py+5], fill="#ffeb3b" if not is_prem else "#ffd700")
+                except Exception:
+                    continue
 
         # Footer
         draw.rectangle([0, h-footer, w, h], fill="#0d1929")
@@ -1212,7 +1192,8 @@ def end_game(chat_id, reason: str = "finished"):
                 winner_user = db.get_user(winner[0])
                 prev_wins = winner_user['wins'] if winner_user and 'wins' in winner_user.keys() else (winner_user[5] if winner_user and len(winner_user) > 5 else 0)
                 db.update_user(winner[0], wins=prev_wins + 1)
-                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts\nReason: {reason}")
+                winner_name = winner_user['name'] if winner_user and 'name' in winner_user.keys() else str(winner[0])
+                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_name)}\nScore: {winner[1]} pts\nReason: {reason}")
                 if session.game_id:
                     try:
                         db.log_game_end(session.game_id, winner[0], winner[1])
@@ -1566,15 +1547,24 @@ def cmd_stats(m):
 
     premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
+    # safe field extraction
+    name = user['name'] if user and 'name' in user.keys() else (user[1] if user else m.from_user.first_name or "Player")
+    total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
+    hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)
+    games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user and len(user) > 4 else 0)
+    wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user and len(user) > 5 else 0)
+    words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user and len(user) > 18 else 0)
+    streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
+
     txt = (f"👤 <b>PROFILE</b>\n\n"
-           f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player'))}{premium_badge}\n"
+           f"Name: {html.escape(str(name))}{premium_badge}\n"
            f"Level: {level} 🏅\n"
            f"XP: {xp}/{xp_needed} ({xp_progress:.1f}%)\n\n"
-           f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
-           f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-           f"Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)} • Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)}\n"
-           f"Words Found: {user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)}\n"
-           f"Streak: {user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)} days 🔥")
+           f"Score: {total_score} pts\n"
+           f"Balance: {hint_balance} pts\n"
+           f"Games: {games_played} • Wins: {wins}\n"
+           f"Words Found: {words_found}\n"
+           f"Streak: {streak} days 🔥")
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['leaderboard','lb'])
@@ -1582,10 +1572,22 @@ def cmd_leaderboard(m):
     top = db.get_top_players(10)
     txt = "🏆 <b>TOP 10 PLAYERS</b>\n\n"
     medals = ["🥇","🥈","🥉"]
-    for i, (name, score, level, is_prem) in enumerate(top, 1):
+    for i, row in enumerate(top, 1):
+        # row is sqlite3.Row with (name, total_score, level, is_premium)
+        try:
+            name = row[0]
+            score = row[1]
+            level = row[2]
+            is_prem = bool(row[3])
+        except Exception:
+            # fallback
+            name = str(row)
+            score = 0
+            level = 1
+            is_prem = False
         medal = medals[i-1] if i <= 3 else f"{i}."
         badge = " 👑" if is_prem else ""
-        txt += f"{medal} {html.escape(name)}{badge} • Lvl {level} • {score} pts\n"
+        txt += f"{medal} {html.escape(str(name))}{badge} • Lvl {level} • {score} pts\n"
     bot.reply_to(m, txt if top else "No players yet!")
 
 @bot.message_handler(commands=['daily'])
@@ -1597,7 +1599,7 @@ def cmd_daily(m):
     user = db.get_user(m.from_user.id)
 
     # award streak achievement if applicable
-    streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+    streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
     if user and streak_val >= 7:
         if db.add_achievement(m.from_user.id, "streak_master"):
             bot.send_message(m.chat.id, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['streak_master']['icon']} {ACHIEVEMENTS['streak_master']['name']}")
@@ -1797,7 +1799,8 @@ def cmd_givepremium(m):
         days = int(args[2])
         db.buy_premium(user_id, days)
         user = db.get_user(user_id)
-        bot.reply_to(m, f"✅ <b>Premium activated!</b>\n\nUser: {user['name'] if user and 'name' in user.keys() else user[1]} (ID: {user_id})\nDays: {days}\nExpiry: {days} days from now")
+        user_name = user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))
+        bot.reply_to(m, f"✅ <b>Premium activated!</b>\n\nUser: {user_name} (ID: {user_id})\nDays: {days}\nExpiry: {days} days from now")
         try:
             bot.send_message(user_id, 
                 f"🎉 <b>PREMIUM ACTIVATED!</b>\n\n"
@@ -1827,9 +1830,9 @@ def cmd_checkpremium(m):
         is_prem = db.is_premium(user_id)
         if is_prem:
             expiry = user['premium_expiry'] if user and 'premium_expiry' in user.keys() else (user[15] if user and len(user) > 15 else "unknown")
-            txt = f"👑 <b>PREMIUM USER</b>\n\nName: {user['name'] if user and 'name' in user.keys() else user[1]}\nID: {user_id}\nExpiry: {expiry}"
+            txt = f"👑 <b>PREMIUM USER</b>\n\nName: {user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))}\nID: {user_id}\nExpiry: {expiry}"
         else:
-            txt = f"❌ <b>NOT PREMIUM</b>\n\nName: {user['name'] if user and 'name' in user.keys() else user[1]}\nID: {user_id}"
+            txt = f"❌ <b>NOT PREMIUM</b>\n\nName: {user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))}\nID: {user_id}"
         bot.reply_to(m, txt)
     except Exception:
         bot.reply_to(m, "Invalid user ID")
@@ -1850,10 +1853,18 @@ def cmd_shoplist(m):
 
     txt = "🛒 <b>SHOP PURCHASES</b>\n\n"
     for p in purchases:
-        # purchase_id, user_id, item_type, price, status, date
-        purchase_id, user_id, item_type, price, status, date = p
-        user = db.get_user(user_id)
-        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {user['name'] if user and 'name' in user.keys() else (user[1] if user else user_id)} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status} • {date}\n\n"
+        try:
+            purchase_id = p['purchase_id'] if 'purchase_id' in p.keys() else p[0]
+            user_id = p['user_id'] if 'user_id' in p.keys() else p[1]
+            item_type = p['item_type'] if 'item_type' in p.keys() else p[2]
+            price = p['price'] if 'price' in p.keys() else p[3]
+            status = p['status'] if 'status' in p.keys() else (p[4] if len(p) > 4 else 'pending')
+            date = p['date'] if 'date' in p.keys() else (p[5] if len(p) > 5 else '')
+            user = db.get_user(user_id)
+            user_name = user['name'] if user and 'name' in user.keys() else str(user_id)
+            txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {html.escape(str(user_name))} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
+        except Exception:
+            continue
 
     txt += "\n💡 Use /givepremium <user_id> <days> to activate"
     bot.reply_to(m, txt)
@@ -1931,8 +1942,16 @@ def cmd_redeemlist(m):
         return
     txt = "💰 <b>PENDING REDEEMS</b>\n\n"
     for r in requests_list[:10]:
-        # request_id, user_id, username, points, amount_inr, upi_id, status, created_at, paid_at
-        txt += f"ID: {r['request_id']} \nUser: {r['username']} ({r['user_id']})\nPoints: {r['points']} → ₹{r['amount_inr']}\nUPI: {r['upi_id']}\n\n"
+        try:
+            request_id = r['request_id'] if 'request_id' in r.keys() else r[0]
+            username = r['username'] if 'username' in r.keys() else r[2]
+            user_id = r['user_id'] if 'user_id' in r.keys() else r[1]
+            points = r['points'] if 'points' in r.keys() else r[3]
+            amount_inr = r['amount_inr'] if 'amount_inr' in r.keys() else r[4]
+            upi_id = r['upi_id'] if 'upi_id' in r.keys() else r[5]
+            txt += f"ID: {request_id} \nUser: {username} ({user_id})\nPoints: {points} → ₹{amount_inr}\nUPI: {upi_id}\n\n"
+        except Exception:
+            continue
     txt += "Use /redeempay <id> to mark as paid"
     bot.reply_to(m, txt)
 
@@ -2076,66 +2095,46 @@ def ai_add(message):
         bot.reply_to(message, "❌ OpenAI API key not configured (OPENAI_API_KEY).")
         return
 
-    # Try several candidate models in order to increase chance of compatibility
-    models_to_try = ["gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-3.5-turbo"]
-    last_error = None
+    try:
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are a Python bot developer."},
+                {"role": "user", "content": f"Generate a Python function to {idea}. Keep it self-contained."}
+            ]
+        }
+        r = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
+        data = r.json()
 
-    for model_name in models_to_try:
-        try:
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": "You are a Python bot developer."},
-                    {"role": "user", "content": f"Generate a Python function to {idea}. Keep it self-contained."}
-                ],
-                "temperature": 0.2,
-                "max_tokens": 1200
-            }
-            r = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
-            if r.status_code not in (200,201):
-                last_error = f"OpenAI {model_name} returned {r.status_code}: {r.text}"
-                logger.debug("AI request failed: %s", last_error)
-                continue
-
-            data = r.json()
-
-            # robustly access content
-            content = ""
-            if "choices" in data and len(data["choices"]) > 0:
-                choice = data["choices"][0]
-                # new-style chat response
-                if isinstance(choice.get("message"), dict):
-                    content = choice["message"].get("content", "") or ""
-                else:
-                    # fallback older shape
-                    content = choice.get("text", "") or ""
-            else:
-                last_error = "AI response missing 'choices' or choices empty."
-                logger.debug(last_error)
-                continue
-
-            code = content.strip()
-            if not code:
-                last_error = "Empty code returned by AI."
-                continue
-
-            pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
-            display = html.escape(code[:3000])
-            bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{display}</pre>", parse_mode="HTML")
+        # ✅ Safe check
+        if "choices" not in data or not data["choices"]:
+            bot.reply_to(message, "❌ AI response missing 'choices'. Check your API key or quota.")
             return
-        except Exception as e:
-            last_error = str(e)
-            tb = traceback.format_exc()
-            logger.exception("AI add exception")
-            try:
-                db.log_error("ai_add_error", last_error, tb)
-            except Exception:
-                pass
-            continue
 
-    # If we reached here, all models failed
-    bot.reply_to(message, f"❌ AI generation failed. Last error: {last_error}")
+        # robustly access content
+        content = data["choices"][0].get("message", {}) or data["choices"][0].get("text", "")
+        if isinstance(content, dict):
+            code = content.get("content", "").strip()
+        else:
+            code = content.strip()
+
+        if not code:
+            bot.reply_to(message, "❌ Empty code returned by AI.")
+            return
+
+        pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
+        # show first part of code safely
+        display = html.escape(code[:3000])
+        bot.reply_to(message, f"✅ AI-generated feature saved as patch #{pid}\n\n<pre>{display}</pre>", parse_mode="HTML")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ AI error: {e}")
+        tb = traceback.format_exc()
+        try:
+            db.log_error("ai_add_error", str(e), tb)
+        except Exception:
+            pass
 
 # ---------------------------
 # FEATURE PACK UPLOAD (owner-only, safe JSON)
@@ -2357,7 +2356,6 @@ def handle_state(m):
 # ---------------------------
 # ForceReply handler for legacy "Found It!" flow (still supported)
 # ---------------------------
-# Replace the broken decorator+handler with this valid code:
 
 @bot.message_handler(
     func=lambda m: (
@@ -2385,61 +2383,89 @@ def guess_reply_handler(m):
 # ---------------------------
 @bot.callback_query_handler(func=lambda c: True)
 def callback(c):
-    cid = c.message.chat.id
-    uid = c.from_user.id
-    data = c.data
+    # Robust: callback may come from inline message (no c.message) or chat
+    try:
+        msg_obj = getattr(c, 'message', None)
+        cid = None
+        msg_message_id = None
+        if msg_obj and getattr(msg_obj, 'chat', None):
+            cid = msg_obj.chat.id
+            msg_message_id = getattr(msg_obj, 'message_id', None)
+        else:
+            # fallback to user's private chat
+            cid = c.from_user.id
 
-    # VERIFY
-    if data == "verify":
-        if is_subscribed(uid):
-            db.update_user(uid, verified=1)
-            notify_owner(
-                f"✅ <b>USER VERIFIED</b>\n\n"
-                f"User: {html.escape(c.from_user.first_name or 'User')}\n"
-                f"ID: <code>{uid}</code>\n"
-                f"Username: @{c.from_user.username if c.from_user.username else 'None'}\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            bot.answer_callback_query(c.id, "✅ Verified! Welcome!", show_alert=True)
+        uid = c.from_user.id
+        data = c.data
+
+        # Logging for debugging button issues
+        logger.debug("Callback received: user=%s data=%s chat_id=%s msg_id=%s", uid, data, cid, msg_message_id)
+
+        # VERIFY
+        if data == "verify":
+            if is_subscribed(uid):
+                db.update_user(uid, verified=1)
+                notify_owner(
+                    f"✅ <b>USER VERIFIED</b>\n\n"
+                    f"User: {html.escape(c.from_user.first_name or 'User')}\n"
+                    f"ID: <code>{uid}</code>\n"
+                    f"Username: @{c.from_user.username if c.from_user.username else 'None'}\n"
+                    f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                try:
+                    bot.answer_callback_query(c.id, "✅ Verified! Welcome!", show_alert=True)
+                except Exception:
+                    pass
+                try:
+                    if msg_message_id:
+                        bot.delete_message(cid, msg_message_id)
+                except Exception:
+                    pass
+                name = c.from_user.first_name or "Player"
+                txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
+                       f"🎮 <b>WORD VORTEX ULTIMATE v10.5</b>\n\n"
+                       f"✅ <b>Verified Successfully!</b>\n\n"
+                       f"Select an option below to continue:")
+                try:
+                    bot.send_photo(cid, START_IMG_URL, caption=txt, reply_markup=main_menu())
+                except Exception:
+                    bot.send_message(cid, txt, reply_markup=main_menu())
+                # maybe check referral eligibility now
+                db.award_referral_if_eligible(uid)
+                return
+            else:
+                try:
+                    bot.answer_callback_query(c.id, "❌ Please join channel first!", show_alert=True)
+                except Exception:
+                    pass
+                return
+
+        # subscription check for other actions
+        if not is_subscribed(uid) and data not in ["verify"]:
             try:
-                bot.delete_message(cid, c.message.message_id)
+                bot.answer_callback_query(c.id, "⚠️ Join channel first!", show_alert=True)
             except Exception:
                 pass
-            name = c.from_user.first_name or "Player"
-            txt = (f"👋 <b>Welcome, {html.escape(name)}!</b>\n\n"
-                   f"🎮 <b>WORD VORTEX ULTIMATE v10.5</b>\n\n"
-                   f"✅ <b>Verified Successfully!</b>\n\n"
-                   f"Select an option below to continue:")
-            try:
-                bot.send_photo(cid, START_IMG_URL, caption=txt, reply_markup=main_menu())
-            except Exception:
-                bot.send_message(cid, txt, reply_markup=main_menu())
-            # maybe check referral eligibility now
-            db.award_referral_if_eligible(uid)
-            return
-        else:
-            bot.answer_callback_query(c.id, "❌ Please join channel first!", show_alert=True)
             return
 
-    # subscription check for other actions
-    if not is_subscribed(uid) and data not in ["verify"]:
-        bot.answer_callback_query(c.id, "⚠️ Join channel first!", show_alert=True)
-        return
-
-    if data == "play":
-        try:
-            bot.edit_message_reply_markup(chat_id=cid, message_id=c.message.message_id, reply_markup=game_modes_menu())
-            bot.answer_callback_query(c.id)
-        except Exception:
+        if data == "play":
             try:
-                bot.send_message(uid, "🎮 Select mode:", reply_markup=game_modes_menu())
-                bot.answer_callback_query(c.id, "Sent to PM!")
+                if msg_message_id:
+                    bot.edit_message_reply_markup(chat_id=cid, message_id=msg_message_id, reply_markup=game_modes_menu())
+                    bot.answer_callback_query(c.id)
+                else:
+                    bot.send_message(uid, "🎮 Select mode:", reply_markup=game_modes_menu())
+                    bot.answer_callback_query(c.id, "Sent to PM!")
             except Exception:
-                bot.answer_callback_query(c.id, "Error!", show_alert=True)
-        return
+                try:
+                    bot.send_message(uid, "🎮 Select mode:", reply_markup=game_modes_menu())
+                    bot.answer_callback_query(c.id, "Sent to PM!")
+                except Exception:
+                    bot.answer_callback_query(c.id, "Error!", show_alert=True)
+            return
 
-    if data == "howtoplay":
-        help_text = """🎮 <b>HOW TO PLAY</b>
+        if data == "howtoplay":
+            help_text = """🎮 <b>HOW TO PLAY</b>
 
 1️⃣ Click "🎮 Play" button
 2️⃣ Select game mode
@@ -2453,327 +2479,372 @@ def callback(c):
 🎯 Finisher: +10 pts
 ⚡ Speed Bonus: +5 pts (10 sec)
 🔥 Combo: +5 pts (consecutive)"""
-        try:
-            bot.send_message(uid, help_text)
-            bot.answer_callback_query(c.id, "Sent to PM!")
-        except Exception:
-            bot.send_message(cid, help_text)
-            bot.answer_callback_query(c.id)
-        return
+            try:
+                bot.send_message(uid, help_text)
+                bot.answer_callback_query(c.id, "Sent to PM!")
+            except Exception:
+                bot.send_message(cid, help_text)
+                bot.answer_callback_query(c.id)
+            return
 
-    if data == "back_main":
-        try:
-            bot.edit_message_reply_markup(chat_id=cid, message_id=c.message.message_id, reply_markup=main_menu())
+        if data == "back_main":
+            try:
+                if msg_message_id:
+                    bot.edit_message_reply_markup(chat_id=cid, message_id=msg_message_id, reply_markup=main_menu())
+                bot.answer_callback_query(c.id)
+            except Exception:
+                pass
+            return
+
+        if data == "leaderboard":
+            top = db.get_top_players(10)
+            txt = "🏆 <b>TOP 10</b>\n\n"
+            for i, row in enumerate(top, 1):
+                try:
+                    name = row[0]
+                    score = row[1]
+                except Exception:
+                    name = str(row)
+                    score = 0
+                badge = " 👑" if (row[3] if len(row) > 3 else False) else ""
+                txt += f"{i}. {html.escape(str(name))}{badge} • {score} pts\n"
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Sent to PM!")
+            except Exception:
+                bot.send_message(cid, txt)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "profile":
+            user = db.get_user(uid)
+            premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else " 🔓 FREE"
+            # safe extraction
+            name = user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User')
+            level = user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)
+            xp = user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)
+            total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)
+            hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)
+            wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)
+            games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)
+            words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)
+            streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+
+            txt = (f"👤 <b>PROFILE</b>\n\n"
+                   f"Name: {html.escape(name)}{premium_badge}\n"
+                   f"Level: {level} | XP: {xp}\n"
+                   f"Score: {total_score} pts\n"
+                   f"Balance: {hint_balance} pts\n"
+                   f"Wins: {wins} | Games: {games_played}\n"
+                   f"Words Found: {words_found}\n"
+                   f"Streak: {streak} days 🔥")
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Sent to PM!")
+            except Exception:
+                bot.send_message(cid, txt)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "achievements":
+            user = db.get_user(uid)
+            achievements = json.loads(user['achievements'] if user and 'achievements' in user.keys() else "[]")
+            txt = "🏅 <b>ACHIEVEMENTS</b>\n\n"
+            for ach_id, ach in ACHIEVEMENTS.items():
+                status = "✅" if ach_id in achievements else "🔒"
+                txt += f"{status} {ach['icon']} <b>{ach['name']}</b>\n{ach['desc']}\nReward: {ach['reward']} pts\n\n"
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.send_message(cid, txt)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "daily":
+            success, reward = db.claim_daily(uid)
+            if not success:
+                bot.answer_callback_query(c.id, "Already claimed!", show_alert=True)
+                return
+            user = db.get_user(uid)
+            premium_msg = " (2x Premium)" if db.is_premium(uid) else ""
+            streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+            txt = f"🎁 +{reward} pts{premium_msg}\nStreak: {streak_val} days!"
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.send_message(cid, txt)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "shop":
+            txt = "🛒 <b>SHOP - REAL MONEY (₹)</b>\n\nSelect item to purchase:"
+            try:
+                bot.send_message(uid, txt, reply_markup=shop_menu())
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.send_message(cid, txt, reply_markup=shop_menu())
+                bot.answer_callback_query(c.id)
+            return
+
+        if data.startswith("shop_"):
+            item_id = data.replace("shop_", "")
+            item = SHOP_ITEMS.get(item_id)
+            if not item:
+                bot.answer_callback_query(c.id, "Invalid item!")
+                return
+
+            txt = (f"💳 <b>PURCHASE: {item['name']}</b>\n\n"
+                   f"Price: <b>₹{item['price']}</b>\n\n"
+                   f"📱 Send payment to:\n"
+                   f"<b>UPI:</b> <code>ruhvaan@slc</code>\n\n"
+                   f"After payment, send screenshot to @{SUPPORT_GROUP.split('/')[-1]}")
+
+            db.add_purchase(uid, item['type'], item['price'])
+
+            notify_owner(
+                f"🛒 <b>NEW SHOP ORDER</b>\n\n"
+                f"User: {html.escape(c.from_user.first_name or 'User')}\n"
+                f"ID: <code>{uid}</code>\n"
+                f"Item: {item['name']}\n"
+                f"Price: ₹{item['price']}\n\n"
+                f"Use /shoplist to view all orders"
+            )
+
+            bot.send_message(uid, txt)
+            bot.answer_callback_query(c.id, f"Order details sent!")
+            return
+
+        if data == "redeem_menu":
+            user = db.get_user(uid)
+            balance = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
+            min_required = REDEEM_MIN_PREMIUM if db.is_premium(uid) else REDEEM_MIN_NON_PREMIUM
+            txt = (f"💰 <b>REDEEM POINTS</b>\n\n"
+                   f"Balance: {balance} pts\n"
+                   f"Rate: 100 pts = ₹1\n"
+                   f"Min: {min_required} pts ({'premium' if db.is_premium(uid) else 'non-premium'})\n\n"
+                   f"Process: Click button below to start")
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🚀 Start Redeem", callback_data="redeem_start"))
+            kb.add(InlineKeyboardButton("« Back", callback_data="back_main"))
+            try:
+                bot.send_message(uid, txt, reply_markup=kb)
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.send_message(cid, txt, reply_markup=kb)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "redeem_start":
+            user_states[uid] = {'type': 'redeem_points'}
+            bot.send_message(uid, "💰 Enter points to redeem (see minimums in Redeem menu):")
             bot.answer_callback_query(c.id)
+            return
+
+        if data == "review_menu":
+            txt = "⭐ <b>SUBMIT REVIEW</b>\n\nProcess: Click button to start or view approved reviews."
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("✍️ Write Review", callback_data="review_start"))
+            kb.add(InlineKeyboardButton("📢 View Reviews", callback_data="view_reviews"))
+            kb.add(InlineKeyboardButton("« Back", callback_data="back_main"))
+            try:
+                bot.send_message(uid, txt, reply_markup=kb)
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.send_message(cid, txt, reply_markup=kb)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "review_start":
+            user_states[uid] = {'type': 'review_rating'}
+            bot.send_message(uid, "⭐ Send rating (1-5):\n1 = Poor, 5 = Excellent")
+            bot.answer_callback_query(c.id)
+            return
+
+        if data == "view_reviews":
+            reviews = db.get_reviews(approved_only=True)
+            if not reviews:
+                bot.answer_callback_query(c.id, "No reviews yet!", show_alert=True)
+                return
+            try:
+                for r in reviews[:10]:
+                    txt = f"⭐ {r['rating']} • {r['username']}\n{(r['text'] or '')[:600]}\n"
+                    bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Sent reviews to you!")
+            except Exception:
+                logger.exception("Error sending reviews")
+                bot.answer_callback_query(c.id, "Error sending reviews", show_alert=True)
+            return
+
+        if data == "referral":
+            botinfo = bot.get_me()
+            username_me = botinfo.username if botinfo and hasattr(botinfo, 'username') else ''
+            ref_link = f"https://t.me/{username_me}?start=ref{uid}"
+            txt = f"👥 <b>INVITE</b>\n\nEarn {REFERRAL_BONUS} pts after they verify & play!\n\n<code>{ref_link}</code>"
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={ref_link}"))
+            try:
+                bot.send_message(uid, txt, reply_markup=kb)
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.send_message(cid, txt, reply_markup=kb)
+                bot.answer_callback_query(c.id)
+            return
+
+        if data == "commands":
+            txt = ("📋 <b>COMMANDS LIST</b>\n\n"
+                   "<b>🎮 Game:</b>\n"
+                   "/new - Start game\n"
+                   "/stop - End game\n\n"
+                   "<b>👤 User:</b>\n"
+                   "/stats - Profile\n"
+                   "/leaderboard - Top 10\n"
+                   "/daily - Daily reward\n"
+                   "/referral - Invite link\n\n"
+                   "<b>📖 Dictionary:</b>\n"
+                   "/define <word> - Word definition\n\n"
+                   "<b>👨‍💼 Admin:</b>\n"
+                   "/givepremium <id> <days> - Give premium\n"
+                   "/checkpremium <id> - Check premium\n"
+                   "/shoplist - View shop orders\n"
+                   "/addpoints <id> <pts>  (adds to hint balance)\n"
+                   "/addscore <id> <pts>   (adds to total_score)\n"
+                   "/givehints <id> <amt>\n"
+                   "/broadcast <msg>\n"
+                   "/listreviews\n"
+                   "/redeemlist")
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Commands sent to PM!")
+            except Exception:
+                bot.send_message(cid, txt)
+                bot.answer_callback_query(c.id, "Commands sent!")
+            return
+
+        # Game mode selection
+        if data.startswith("play_"):
+            mode = data.replace("play_", "")
+            custom_words = None
+            is_hard = False
+            theme = "default"
+
+            if mode == "normal":
+                mode_name = "NORMAL"
+            elif mode == "hard":
+                mode_name = "HARD"
+                is_hard = True
+            elif mode in ("chemistry","physics","math","jee"):
+                mode_name = mode.upper()
+                # use random sample from ALL_WORDS to provide subject-like variety without fixed lists
+                if ALL_WORDS:
+                    custom_words = random.sample(ALL_WORDS, min(200, len(ALL_WORDS)))
+                # if premium user starts the game, give gold theme
+                if db.is_premium(uid):
+                    theme = "gold"
+            else:
+                mode_name = "NORMAL"
+
+            start_game(cid, uid, mode_name, is_hard, custom_words, theme=theme)
+            try:
+                bot.answer_callback_query(c.id, f"✅ {mode_name} mode started!")
+            except Exception:
+                pass
+            return
+
+        # Game actions
+        if data == "g_guess":
+            if cid not in games:
+                try:
+                    bot.answer_callback_query(c.id, "No game!", show_alert=True)
+                except Exception:
+                    pass
+                return
+            try:
+                # old flow: send ForceReply - still supported
+                bot.send_message(cid, "💬 Type the word you found:", reply_markup=ForceReply(selective=True))
+                bot.answer_callback_query(c.id)
+            except Exception:
+                bot.answer_callback_query(c.id, "Error!", show_alert=True)
+            return
+
+        if data == "g_hint":
+            if cid not in games:
+                bot.answer_callback_query(c.id, "No game!", show_alert=True)
+                return
+            user = db.get_user(uid)
+
+            cost = 25 if db.is_premium(uid) else HINT_COST
+            user_hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)
+            if user_hint_balance < cost:
+                bot.answer_callback_query(c.id, f"Need {cost} pts!", show_alert=True)
+                return
+            game = games[cid]
+            hidden = [w for w in game.words if w not in game.found]
+            if not hidden:
+                bot.answer_callback_query(c.id, "All found!", show_alert=True)
+                return
+            # premium partial hint: reveal one letter position instead of full word
+            reveal = random.choice(hidden)
+            if db.is_premium(uid):
+                # reveal a random position letter
+                pos = random.randint(0, len(reveal)-1)
+                masked = "".join([reveal[i] if i == pos else ("•" if 0 < i < len(reveal)-1 else reveal[i]) for i in range(len(reveal))])
+                hint_text = f"💡 <b>Partial Hint:</b> <code>{masked}</code> (-{cost} pts)"
+            else:
+                hint_text = f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)"
+
+            db.update_user(uid, hint_balance=user_hint_balance - cost)
+            bot.send_message(cid, hint_text)
+            bot.answer_callback_query(c.id)
+            return
+
+        if data == "g_score":
+            if cid not in games:
+                bot.answer_callback_query(c.id, "No game!", show_alert=True)
+                return
+            game = games[cid]
+            if not game.players:
+                bot.answer_callback_query(c.id, "No scores yet!", show_alert=True)
+                return
+            scores = sorted(game.players.items(), key=lambda x: x[1], reverse=True)
+            txt = "📊 <b>CURRENT SCORES</b>\n\n"
+            for i, (u, pts) in enumerate(scores, 1):
+                try:
+                    name = db.get_user(u)['name'] if db.get_user(u) and 'name' in db.get_user(u).keys() else str(u)
+                except Exception:
+                    name = str(u)
+                txt += f"{i}. {html.escape(str(name))} - {pts} pts\n"
+            bot.send_message(cid, txt)
+            bot.answer_callback_query(c.id)
+            return
+
+        if data == "g_stop":
+            if cid not in games:
+                bot.answer_callback_query(c.id, "No game!", show_alert=True)
+                return
+            end_game(cid, reason="stopped")
+            bot.send_message(cid, "🛑 <b>Game stopped!</b>")
+            bot.answer_callback_query(c.id, "Game ended!")
+            return
+
+        # Self-test button (checks callback pipeline)
+        if data == "selftest_ping":
+            try:
+                bot.answer_callback_query(c.id, "Button OK ✅")
+                bot.send_message(uid, "Self-test: Button callback OK. You can add features via /run (owner only) or install packages with /install_pkg.")
+            except Exception:
+                pass
+            return
+
+        bot.answer_callback_query(c.id)
+    except Exception:
+        tb = traceback.format_exc()
+        logger.exception("Error in callback handler: %s", tb)
+        try:
+            db.log_error("callback_handler_error", "Error in callback handler", tb)
         except Exception:
             pass
-        return
-
-    if data == "leaderboard":
-        top = db.get_top_players(10)
-        txt = "🏆 <b>TOP 10</b>\n\n"
-        for i, (name, score, level, is_prem) in enumerate(top, 1):
-            badge = " 👑" if is_prem else ""
-            txt += f"{i}. {html.escape(name)}{badge} • {score} pts\n"
-        try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Sent to PM!")
-        except Exception:
-            bot.send_message(cid, txt)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "profile":
-        user = db.get_user(uid)
-        premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else " 🔓 FREE"
-        txt = (f"👤 <b>PROFILE</b>\n\n"
-               f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User'))}{premium_badge}\n"
-               f"Level: {user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)} | XP: {user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)}\n"
-               f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
-               f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-               f"Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)} | Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)}")
-        try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Sent to PM!")
-        except Exception:
-            bot.send_message(cid, txt)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "achievements":
-        user = db.get_user(uid)
-        achievements = json.loads(user['achievements'] if user and 'achievements' in user.keys() else "[]")
-        txt = "🏅 <b>ACHIEVEMENTS</b>\n\n"
-        for ach_id, ach in ACHIEVEMENTS.items():
-            status = "✅" if ach_id in achievements else "🔒"
-            txt += f"{status} {ach['icon']} <b>{ach['name']}</b>\n{ach['desc']}\nReward: {ach['reward']} pts\n\n"
-        try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.send_message(cid, txt)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "daily":
-        success, reward = db.claim_daily(uid)
-        if not success:
-            bot.answer_callback_query(c.id, "Already claimed!", show_alert=True)
-            return
-        user = db.get_user(uid)
-        premium_msg = " (2x Premium)" if db.is_premium(uid) else ""
-        streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
-        txt = f"🎁 +{reward} pts{premium_msg}\nStreak: {streak_val} days!"
-        try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.send_message(cid, txt)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "shop":
-        txt = "🛒 <b>SHOP - REAL MONEY (₹)</b>\n\nSelect item to purchase:"
-        try:
-            bot.send_message(uid, txt, reply_markup=shop_menu())
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.send_message(cid, txt, reply_markup=shop_menu())
-            bot.answer_callback_query(c.id)
-        return
-
-    if data.startswith("shop_"):
-        item_id = data.replace("shop_", "")
-        item = SHOP_ITEMS.get(item_id)
-        if not item:
-            bot.answer_callback_query(c.id, "Invalid item!")
-            return
-
-        txt = (f"💳 <b>PURCHASE: {item['name']}</b>\n\n"
-               f"Price: <b>₹{item['price']}</b>\n\n"
-               f"📱 Send payment to:\n"
-               f"<b>UPI:</b> <code>ruhvaan@slc</code>\n\n"
-               f"After payment, send screenshot to @{SUPPORT_GROUP.split('/')[-1]}")
-
-        db.add_purchase(uid, item['type'], item['price'])
-
-        notify_owner(
-            f"🛒 <b>NEW SHOP ORDER</b>\n\n"
-            f"User: {html.escape(c.from_user.first_name or 'User')}\n"
-            f"ID: <code>{uid}</code>\n"
-            f"Item: {item['name']}\n"
-            f"Price: ₹{item['price']}\n\n"
-            f"Use /shoplist to view all orders"
-        )
-
-        bot.send_message(uid, txt)
-        bot.answer_callback_query(c.id, f"Order details sent!")
-        return
-
-    if data == "redeem_menu":
-        user = db.get_user(uid)
-        balance = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
-        min_required = REDEEM_MIN_PREMIUM if db.is_premium(uid) else REDEEM_MIN_NON_PREMIUM
-        txt = (f"💰 <b>REDEEM POINTS</b>\n\n"
-               f"Balance: {balance} pts\n"
-               f"Rate: 100 pts = ₹1\n"
-               f"Min: {min_required} pts ({'premium' if db.is_premium(uid) else 'non-premium'})\n\n"
-               f"Process: Click button below to start")
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🚀 Start Redeem", callback_data="redeem_start"))
-        kb.add(InlineKeyboardButton("« Back", callback_data="back_main"))
-        try:
-            bot.send_message(uid, txt, reply_markup=kb)
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.send_message(cid, txt, reply_markup=kb)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "redeem_start":
-        user_states[uid] = {'type': 'redeem_points'}
-        bot.send_message(uid, "💰 Enter points to redeem (see minimums in Redeem menu):")
-        bot.answer_callback_query(c.id)
-        return
-
-    if data == "review_menu":
-        txt = "⭐ <b>SUBMIT REVIEW</b>\n\nProcess: Click button to start or view approved reviews."
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("✍️ Write Review", callback_data="review_start"))
-        kb.add(InlineKeyboardButton("📢 View Reviews", callback_data="view_reviews"))
-        kb.add(InlineKeyboardButton("« Back", callback_data="back_main"))
-        try:
-            bot.send_message(uid, txt, reply_markup=kb)
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.send_message(cid, txt, reply_markup=kb)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "review_start":
-        user_states[uid] = {'type': 'review_rating'}
-        bot.send_message(uid, "⭐ Send rating (1-5):\n1 = Poor, 5 = Excellent")
-        bot.answer_callback_query(c.id)
-        return
-
-    if data == "view_reviews":
-        reviews = db.get_reviews(approved_only=True)
-        if not reviews:
-            bot.answer_callback_query(c.id, "No reviews yet!", show_alert=True)
-            return
-        try:
-            for r in reviews[:10]:
-                txt = f"⭐ {r['rating']} • {r['username']}\n{(r['text'] or '')[:600]}\n"
-                bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Sent reviews to you!")
-        except Exception:
-            logger.exception("Error sending reviews")
-            bot.answer_callback_query(c.id, "Error sending reviews", show_alert=True)
-        return
-
-    if data == "referral":
-        botinfo = bot.get_me()
-        username_me = botinfo.username if botinfo and hasattr(botinfo, 'username') else ''
-        ref_link = f"https://t.me/{username_me}?start=ref{uid}"
-        txt = f"👥 <b>INVITE</b>\n\nEarn {REFERRAL_BONUS} pts after they verify & play!\n\n<code>{ref_link}</code>"
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={ref_link}"))
-        try:
-            bot.send_message(uid, txt, reply_markup=kb)
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.send_message(cid, txt, reply_markup=kb)
-            bot.answer_callback_query(c.id)
-        return
-
-    if data == "commands":
-        txt = ("📋 <b>COMMANDS LIST</b>\n\n"
-               "<b>🎮 Game:</b>\n"
-               "/new - Start game\n"
-               "/stop - End game\n\n"
-               "<b>👤 User:</b>\n"
-               "/stats - Profile\n"
-               "/leaderboard - Top 10\n"
-               "/daily - Daily reward\n"
-               "/referral - Invite link\n\n"
-               "<b>📖 Dictionary:</b>\n"
-               "/define <word> - Word definition\n\n"
-               "<b>👨‍💼 Admin:</b>\n"
-               "/givepremium <id> <days> - Give premium\n"
-               "/checkpremium <id> - Check premium\n"
-               "/shoplist - View shop orders\n"
-               "/addpoints <id> <pts>  (adds to hint balance)\n"
-               "/addscore <id> <pts>   (adds to total_score)\n"
-               "/givehints <id> <amt>\n"
-               "/broadcast <msg>\n"
-               "/listreviews\n"
-               "/redeemlist\n"
-               "/run - Execute short Python (OWNER only)\n")
-        try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Commands sent to PM!")
-        except Exception:
-            bot.send_message(cid, txt)
-            bot.answer_callback_query(c.id, "Commands sent!")
-        return
-
-    # Game mode selection
-    if data.startswith("play_"):
-        mode = data.replace("play_", "")
-        custom_words = None
-        is_hard = False
-        theme = "default"
-
-        if mode == "normal":
-            mode_name = "NORMAL"
-        elif mode == "hard":
-            mode_name = "HARD"
-            is_hard = True
-        elif mode in ("chemistry","physics","math","jee"):
-            mode_name = mode.upper()
-            # use random sample from ALL_WORDS to provide subject-like variety without fixed lists
-            if ALL_WORDS:
-                custom_words = random.sample(ALL_WORDS, min(200, len(ALL_WORDS)))
-            # if premium user starts the game, give gold theme
-            if db.is_premium(uid):
-                theme = "gold"
-        else:
-            mode_name = "NORMAL"
-
-        start_game(cid, uid, mode_name, is_hard, custom_words, theme=theme)
-        bot.answer_callback_query(c.id, f"✅ {mode_name} mode started!")
-        return
-
-    # Game actions
-    if data == "g_guess":
-        if cid not in games:
-            bot.answer_callback_query(c.id, "No game!", show_alert=True)
-            return
-        try:
-            # old flow: send ForceReply - still supported
-            bot.send_message(cid, "💬 Type the word you found:", reply_markup=ForceReply(selective=True))
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.answer_callback_query(c.id, "Error!", show_alert=True)
-        return
-
-    if data == "g_hint":
-        if cid not in games:
-            bot.answer_callback_query(c.id, "No game!", show_alert=True)
-            return
-        user = db.get_user(uid)
-
-        cost = 25 if db.is_premium(uid) else HINT_COST
-        if (user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)) < cost:
-            bot.answer_callback_query(c.id, f"Need {cost} pts!", show_alert=True)
-            return
-        game = games[cid]
-        hidden = [w for w in game.words if w not in game.found]
-        if not hidden:
-            bot.answer_callback_query(c.id, "All found!", show_alert=True)
-            return
-        # premium partial hint: reveal one letter position instead of full word
-        reveal = random.choice(hidden)
-        if db.is_premium(uid):
-            # reveal a random position letter
-            pos = random.randint(0, len(reveal)-1)
-            masked = "".join([reveal[i] if i == pos else ("•" if 0 < i < len(reveal)-1 else reveal[i]) for i in range(len(reveal))])
-            hint_text = f"💡 <b>Partial Hint:</b> <code>{masked}</code> (-{cost} pts)"
-        else:
-            hint_text = f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)"
-
-        db.update_user(uid, hint_balance=(user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)) - cost)
-        bot.send_message(cid, hint_text)
-        bot.answer_callback_query(c.id)
-        return
-
-    if data == "g_score":
-        if cid not in games:
-            bot.answer_callback_query(c.id, "No game!", show_alert=True)
-            return
-        game = games[cid]
-        if not game.players:
-            bot.answer_callback_query(c.id, "No scores yet!", show_alert=True)
-            return
-        scores = sorted(game.players.items(), key=lambda x: x[1], reverse=True)
-        txt = "📊 <b>CURRENT SCORES</b>\n\n"
-        for i, (u, pts) in enumerate(scores, 1):
-            name = db.get_user(u)['name'] if db.get_user(u) and 'name' in db.get_user(u).keys() else str(u)
-            txt += f"{i}. {html.escape(name)} - {pts} pts\n"
-        bot.send_message(cid, txt)
-        bot.answer_callback_query(c.id)
-        return
-
-    if data == "g_stop":
-        if cid not in games:
-            bot.answer_callback_query(c.id, "No game!", show_alert=True)
-            return
-        end_game(cid, reason="stopped")
-        bot.send_message(cid, "🛑 <b>Game stopped!</b>")
-        bot.answer_callback_query(c.id, "Game ended!")
-        return
-
-    bot.answer_callback_query(c.id)
 
 # ---------------------------
 # FEATURE: AI-assisted suggestions for errors (/suggest_fix)
@@ -2812,50 +2883,27 @@ def cmd_suggest_fix(m):
             "Give suggested changes and example code snippets if relevant."
         )
 
-        # Try multiple models to maximize chance of success
-        models_to_try = ["gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-3.5-turbo"]
-        last_error = None
-
-        for model_name in models_to_try:
+        try:
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            body = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 800,
+                "temperature": 0.2,
+            }
+            r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=30)
+            if r.status_code == 200:
+                reply = r.json()["choices"][0]["message"]["content"]
+                bot.reply_to(m, f"🤖 Suggestion:\n{reply[:4000]}")
+            else:
+                bot.reply_to(m, f"OpenAI API error: {r.status_code} {r.text}")
+        except Exception as e:
+            bot.reply_to(m, f"Error contacting OpenAI: {e}")
+            tb2 = traceback.format_exc()
             try:
-                headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-                body = {
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 800,
-                    "temperature": 0.2,
-                }
-                r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=30)
-                if r.status_code == 200:
-                    resp = r.json()
-                    content = ""
-                    if "choices" in resp and len(resp["choices"]) > 0:
-                        ch = resp["choices"][0]
-                        if isinstance(ch.get("message"), dict):
-                            content = ch["message"].get("content", "") or ""
-                        else:
-                            content = ch.get("text", "") or ""
-                    if not content:
-                        last_error = f"{model_name} returned empty content."
-                        continue
-                    bot.reply_to(m, f"🤖 Suggestion:\n{content[:4000]}")
-                    return
-                else:
-                    last_error = f"{model_name} returned {r.status_code}: {r.text}"
-                    logger.debug("OpenAI response: %s", last_error)
-                    continue
-            except Exception as e:
-                last_error = str(e)
-                tb2 = traceback.format_exc()
-                logger.exception("OpenAI request exception")
-                try:
-                    db.log_error("openai_request_error", last_error, tb2, context=f"error_id:{eid}")
-                except Exception:
-                    pass
-                continue
-
-        bot.reply_to(m, f"OpenAI request failed. Last error: {last_error}")
-
+                db.log_error("openai_request_error", str(e), tb2, context=f"error_id:{eid}")
+            except Exception:
+                pass
     except Exception as e:
         bot.reply_to(m, f"Invalid id: {e}")
 
@@ -2895,7 +2943,7 @@ def cmd_run(m):
             tf.flush()
             fname = tf.name
 
-        # run with timeout (10s) and capture output
+        # run with timeout (12s) and capture output
         proc = subprocess.run(
             ["python3", fname],
             stdout=subprocess.PIPE,
@@ -2922,6 +2970,57 @@ def cmd_run(m):
     finally:
         try:
             os.unlink(fname)
+        except Exception:
+            pass
+
+# ---------------------------
+# INSTALL PACKAGES (OWNER ONLY) - /install_pkg
+# ---------------------------
+@bot.message_handler(commands=['install_pkg'])
+def cmd_install_pkg(m):
+    """
+    OWNER only. Install python package(s) at runtime via pip.
+    Usage: /install_pkg package1 package2==1.2.3
+    NOTE: This runs pip in the same Python environment. Restricted to OWNER only.
+    """
+    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+        return
+    args = m.text.split(maxsplit=1)
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: /install_pkg <package1> [package2==x.y.z ...]")
+        return
+    pkgs = args[1].strip()
+    if not pkgs:
+        bot.reply_to(m, "No packages specified.")
+        return
+
+    bot.reply_to(m, f"🔧 Installing: {pkgs} (this may take a while)...")
+    try:
+        # run pip install
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-input"] + pkgs.split(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300
+        )
+        out = proc.stdout.decode('utf-8', errors='replace')
+        err = proc.stderr.decode('utf-8', errors='replace')
+        reply = ""
+        if out:
+            reply += f"📤 STDOUT:\n{out}\n"
+        if err:
+            reply += f"⚠️ STDERR:\n{err}\n"
+        if not reply:
+            reply = "✅ pip finished with no output."
+        # send a trimmed response
+        bot.reply_to(m, reply[:3900])
+    except subprocess.TimeoutExpired:
+        bot.reply_to(m, "⏱ pip timed out.")
+    except Exception as e:
+        tb = traceback.format_exc()
+        bot.reply_to(m, f"❌ Error installing packages: {e}\n\n{tb[:1500]}")
+        try:
+            db.log_error("install_pkg_error", str(e), tb)
         except Exception:
             pass
 
@@ -3053,6 +3152,26 @@ def notify_owner(text: str):
         logger.debug("Failed to notify owner/group")
 
 # ---------------------------
+# SELFTEST (owner/admin) - quick checks
+# ---------------------------
+@bot.message_handler(commands=['selftest'])
+def cmd_selftest(m):
+    """
+    Run a quick self-test:
+    - send a test message with an inline button that calls back to the bot
+    - returns basic stats
+    """
+    if not db.is_admin(m.from_user.id):
+        return
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("Test Button (press me)", callback_data="selftest_ping"))
+        stats = f"Games active: {len(games)}\nKnown users: {len(db.get_all_users())}"
+        bot.send_message(m.chat.id, f"🔬 Self-test:\n{stats}", reply_markup=kb)
+    except Exception as e:
+        bot.reply_to(m, f"Error running selftest: {e}")
+
+# ---------------------------
 # RUN
 # ---------------------------
 if __name__ == "__main__":
@@ -3061,6 +3180,7 @@ if __name__ == "__main__":
     logger.info("✅ Premium Commands Added")
     logger.info("✅ Shop = Real Money (₹)")
     logger.info("✅ Direct guesses, 10-min timer, auto-delete enabled")
+    logger.info("✅ Added many achievements, selftest, and package installer (/install_pkg) for OWNER")
 
     def run_bot():
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
