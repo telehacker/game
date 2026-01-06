@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """
-WORD VORTEX ULTIMATE v10.5 - FULL FIXED & ENHANCED
+WORD VORTEX ULTIMATE v10.5 - FIXED & ENHANCED (syntax + runtime robustness fixes)
 
-This file is the merged, fixed, and enhanced version of your bot.py with:
-- Additive DB schema changes (settings, errors, patches, games.full_state)
-- sqlite3.Row usage
-- Error logging to DB + admin commands to list/view/issue errors
-- Patch upload & optional GitHub issue creation
-- Feature pack upload (JSON only, <=200 KB)
-- AI-assisted /suggest_fix (requires OPENAI_API_KEY)
-- Leaderboard image generation
-- /set_config and /get_config runtime settings (stored in settings table)
-- All previously present features (game flow, direct guesses, premium perks, referrals, redeem, shop, reviews)
+See commit message for summary of fixes applied in this file.
 """
 
 import os
@@ -44,15 +35,14 @@ if not TOKEN:
     print("❌ TELEGRAM_TOKEN not set")
     sys.exit(1)
 
-OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) or None
-NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) or OWNER_ID
+OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) if os.environ.get("OWNER_ID") else 8271254197
+NOTIFICATION_GROUP = int(os.environ.get("NOTIFICATION_GROUP", "-1003682940543")) if os.environ.get("NOTIFICATION_GROUP") else OWNER_ID
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 
 # GitHub / OpenAI config (optional)
-# FIX: Use standard environment variable names. Previously code tried to read wrong env keys.
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT")
 REPO_OWNER = os.environ.get("REPO_OWNER") or os.environ.get("GITHUB_REPO_OWNER") or "telehacker"
 REPO_NAME = os.environ.get("REPO_NAME") or os.environ.get("GITHUB_REPO_NAME") or "game"
@@ -382,7 +372,7 @@ class Database:
 
     def add_achievement(self, user_id: int, ach_id: str) -> bool:
         user = self.get_user(user_id)
-        achievements_json = user['achievements'] if 'achievements' in user.keys() else (user[17] if user and len(user) > 17 and user[17] else "[]")
+        achievements_json = user['achievements'] if user and 'achievements' in user.keys() else "[]"
         achievements = json.loads(achievements_json)
         if ach_id in achievements:
             return False
@@ -522,7 +512,6 @@ class Database:
             # create award tracking row (not awarded yet)
             c.execute("""INSERT OR IGNORE INTO referral_awards (referrer_id, referred_id, awarded) VALUES (?, ?, 0)""",
                       (referrer_id, referred_id))
-            # Do NOT credit referrer yet; will be done when referred user meets activity threshold.
             conn.commit()
             conn.close()
             return True
@@ -558,7 +547,7 @@ class Database:
         if not urow:
             conn.close()
             return False
-        # using name-based access when possible
+
         games_played = urow['games_played'] if 'games_played' in urow.keys() else (urow[4] if len(urow) > 4 else 0)
         words_found = urow['words_found'] if 'words_found' in urow.keys() else (urow[18] if len(urow) > 18 else 0)
         verified = urow['verified'] if 'verified' in urow.keys() else (urow[19] if len(urow) > 19 else 0)
@@ -592,8 +581,8 @@ class Database:
         if not row:
             conn.close()
             return False, 0
-        last_daily = row['last_daily'] if 'last_daily' in row.keys() else (row[12] if len(row) > 12 else None)
-        streak = row['streak'] if 'streak' in row.keys() else (row[11] if len(row) > 11 else 0)
+        last_daily = row['last_daily'] if 'last_daily' in row.keys() else None
+        streak = row['streak'] if 'streak' in row.keys() else 0
 
         today = datetime.now().strftime("%Y-%m-%d")
         if last_daily == today:
@@ -730,6 +719,7 @@ class Database:
     def set_setting(self, key: str, value: str):
         conn = self._conn()
         c = conn.cursor()
+        # Use upsert supported syntax
         c.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                   (key, value, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
@@ -855,25 +845,28 @@ class ImageRenderer:
         # Thin lines for found words
         if placements and found:
             for word, coords in placements.items():
-                if word in found and coords:
-                    finder = found.get(word)
-                    is_prem = db.is_premium(finder) if finder else False
+                try:
+                    if word in found and coords:
+                        finder = found.get(word)
+                        is_prem = db.is_premium(finder) if finder else False
 
-                    a, b = coords[0], coords[-1]
-                    x1 = pad + a[1]*cell + cell//2
-                    y1 = grid_y + a[0]*cell + cell//2
-                    x2 = pad + b[1]*cell + cell//2
-                    y2 = grid_y + b[0]*cell + cell//2
+                        a, b = coords[0], coords[-1]
+                        x1 = pad + a[1]*cell + cell//2
+                        y1 = grid_y + a[0]*cell + cell//2
+                        x2 = pad + b[1]*cell + cell//2
+                        y2 = grid_y + b[0]*cell + cell//2
 
-                    if is_prem or theme == "gold":
-                        draw.line([(x1,y1),(x2,y2)], fill="#ffd700", width=4)
-                        draw.line([(x1,y1),(x2,y2)], fill="#fff2a6", width=1)
-                    else:
-                        draw.line([(x1,y1),(x2,y2)], fill="#ffff99", width=3)
-                        draw.line([(x1,y1),(x2,y2)], fill="#ffeb3b", width=1)
+                        if is_prem or theme == "gold":
+                            draw.line([(x1,y1),(x2,y2)], fill="#ffd700", width=4)
+                            draw.line([(x1,y1),(x2,y2)], fill="#fff2a6", width=1)
+                        else:
+                            draw.line([(x1,y1),(x2,y2)], fill="#ffff99", width=3)
+                            draw.line([(x1,y1),(x2,y2)], fill="#ffeb3b", width=1)
 
-                    for px, py in [(x1,y1),(x2,y2)]:
-                        draw.ellipse([px-5, py-5, px+5, py+5], fill="#ffeb3b" if not is_prem else "#ffd700")
+                        for px, py in [(x1,y1),(x2,y2)]:
+                            draw.ellipse([px-5, py-5, px+5, py+5], fill="#ffeb3b" if not is_prem else "#ffd700")
+                except Exception:
+                    continue
 
         # Footer
         draw.rectangle([0, h-footer, w, h], fill="#0d1929")
@@ -1187,7 +1180,8 @@ def end_game(chat_id, reason: str = "finished"):
                 winner_user = db.get_user(winner[0])
                 prev_wins = winner_user['wins'] if winner_user and 'wins' in winner_user.keys() else (winner_user[5] if winner_user and len(winner_user) > 5 else 0)
                 db.update_user(winner[0], wins=prev_wins + 1)
-                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_user[1])}\nScore: {winner[1]} pts\nReason: {reason}")
+                winner_name = winner_user['name'] if winner_user and 'name' in winner_user.keys() else str(winner[0])
+                bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_name)}\nScore: {winner[1]} pts\nReason: {reason}")
                 if session.game_id:
                     try:
                         db.log_game_end(session.game_id, winner[0], winner[1])
@@ -1534,51 +1528,24 @@ def cmd_stop(m):
 @bot.message_handler(commands=['stats','profile'])
 def cmd_stats(m):
     user = db.get_user(m.from_user.id, m.from_user.first_name)
-    level = user['level'] if user and 'level' in user.keys() else 1
-    xp = user['xp'] if user and 'xp' in user.keys() else 0
+    level = user['level'] if user and 'level' in user.keys() else (user[9] if user and len(user) > 9 else 1)
+    xp = user['xp'] if user and 'xp' in user.keys() else (user[10] if user and len(user) > 10 else 0)
     xp_needed = level * 1000
     xp_progress = (xp / xp_needed * 100) if xp_needed > 0 else 0
 
     premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
-    # Normalize fields safely (supports sqlite3.Row or tuple fallback)
-    try:
-        name = html.escape(user['name']) if user and 'name' in user.keys() else (html.escape(user[1]) if user and len(user) > 1 else 'Player')
-    except Exception:
-        name = 'Player'
-
-    try:
-        total_score = int(user['total_score']) if user and 'total_score' in user.keys() else (int(user[6]) if user and len(user) > 6 else 0)
-    except Exception:
-        total_score = 0
-
-    try:
-        hint_balance = int(user['hint_balance']) if user and 'hint_balance' in user.keys() else (int(user[7]) if user and len(user) > 7 else 0)
-    except Exception:
-        hint_balance = 0
-
-    try:
-        games_played = int(user['games_played']) if user and 'games_played' in user.keys() else (int(user[4]) if user and len(user) > 4 else 0)
-    except Exception:
-        games_played = 0
-
-    try:
-        wins = int(user['wins']) if user and 'wins' in user.keys() else (int(user[5]) if user and len(user) > 5 else 0)
-    except Exception:
-        wins = 0
-
-    try:
-        words_found = int(user['words_found']) if user and 'words_found' in user.keys() else (int(user[18]) if user and len(user) > 18 else 0)
-    except Exception:
-        words_found = 0
-
-    try:
-        streak = int(user['streak']) if user and 'streak' in user.keys() else (int(user[11]) if user and len(user) > 11 else 0)
-    except Exception:
-        streak = 0
+    # safe field extraction
+    name = user['name'] if user and 'name' in user.keys() else (user[1] if user else m.from_user.first_name or "Player")
+    total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user and len(user) > 6 else 0)
+    hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)
+    games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user and len(user) > 4 else 0)
+    wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user and len(user) > 5 else 0)
+    words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user and len(user) > 18 else 0)
+    streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
 
     txt = (f"👤 <b>PROFILE</b>\n\n"
-           f"Name: {name}{premium_badge}\n"
+           f"Name: {html.escape(str(name))}{premium_badge}\n"
            f"Level: {level} 🏅\n"
            f"XP: {xp}/{xp_needed} ({xp_progress:.1f}%)\n\n"
            f"Score: {total_score} pts\n"
@@ -1593,10 +1560,22 @@ def cmd_leaderboard(m):
     top = db.get_top_players(10)
     txt = "🏆 <b>TOP 10 PLAYERS</b>\n\n"
     medals = ["🥇","🥈","🥉"]
-    for i, (name, score, level, is_prem) in enumerate(top, 1):
+    for i, row in enumerate(top, 1):
+        # row is sqlite3.Row with (name, total_score, level, is_premium)
+        try:
+            name = row[0]
+            score = row[1]
+            level = row[2]
+            is_prem = bool(row[3])
+        except Exception:
+            # fallback
+            name = str(row)
+            score = 0
+            level = 1
+            is_prem = False
         medal = medals[i-1] if i <= 3 else f"{i}."
         badge = " 👑" if is_prem else ""
-        txt += f"{medal} {html.escape(name)}{badge} • Lvl {level} • {score} pts\n"
+        txt += f"{medal} {html.escape(str(name))}{badge} • Lvl {level} • {score} pts\n"
     bot.reply_to(m, txt if top else "No players yet!")
 
 @bot.message_handler(commands=['daily'])
@@ -1608,7 +1587,7 @@ def cmd_daily(m):
     user = db.get_user(m.from_user.id)
 
     # award streak achievement if applicable
-    streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+    streak_val = user['streak'] if user and 'streak' in user.keys() else (user[11] if user and len(user) > 11 else 0)
     if user and streak_val >= 7:
         if db.add_achievement(m.from_user.id, "streak_master"):
             bot.send_message(m.chat.id, f"🏆 <b>Achievement Unlocked!</b>\n{ACHIEVEMENTS['streak_master']['icon']} {ACHIEVEMENTS['streak_master']['name']}")
@@ -1808,7 +1787,8 @@ def cmd_givepremium(m):
         days = int(args[2])
         db.buy_premium(user_id, days)
         user = db.get_user(user_id)
-        bot.reply_to(m, f"✅ <b>Premium activated!</b>\n\nUser: {user['name'] if user and 'name' in user.keys() else user[1]} (ID: {user_id})\nDays: {days}\nExpiry: {days} days from now")
+        user_name = user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))
+        bot.reply_to(m, f"✅ <b>Premium activated!</b>\n\nUser: {user_name} (ID: {user_id})\nDays: {days}\nExpiry: {days} days from now")
         try:
             bot.send_message(user_id, 
                 f"🎉 <b>PREMIUM ACTIVATED!</b>\n\n"
@@ -1838,9 +1818,9 @@ def cmd_checkpremium(m):
         is_prem = db.is_premium(user_id)
         if is_prem:
             expiry = user['premium_expiry'] if user and 'premium_expiry' in user.keys() else (user[15] if user and len(user) > 15 else "unknown")
-            txt = f"👑 <b>PREMIUM USER</b>\n\nName: {user['name'] if user and 'name' in user.keys() else user[1]}\nID: {user_id}\nExpiry: {expiry}"
+            txt = f"👑 <b>PREMIUM USER</b>\n\nName: {user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))}\nID: {user_id}\nExpiry: {expiry}"
         else:
-            txt = f"❌ <b>NOT PREMIUM</b>\n\nName: {user['name'] if user and 'name' in user.keys() else user[1]}\nID: {user_id}"
+            txt = f"❌ <b>NOT PREMIUM</b>\n\nName: {user['name'] if user and 'name' in user.keys() else (user[1] if user else str(user_id))}\nID: {user_id}"
         bot.reply_to(m, txt)
     except Exception:
         bot.reply_to(m, "Invalid user ID")
@@ -1861,10 +1841,18 @@ def cmd_shoplist(m):
 
     txt = "🛒 <b>SHOP PURCHASES</b>\n\n"
     for p in purchases:
-        # purchase_id, user_id, item_type, price, status, date
-        purchase_id, user_id, item_type, price, status, date = p
-        user = db.get_user(user_id)
-        txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {user['name'] if user and 'name' in user.keys() else (user[1] if user else user_id)} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
+        try:
+            purchase_id = p['purchase_id'] if 'purchase_id' in p.keys() else p[0]
+            user_id = p['user_id'] if 'user_id' in p.keys() else p[1]
+            item_type = p['item_type'] if 'item_type' in p.keys() else p[2]
+            price = p['price'] if 'price' in p.keys() else p[3]
+            status = p['status'] if 'status' in p.keys() else (p[4] if len(p) > 4 else 'pending')
+            date = p['date'] if 'date' in p.keys() else (p[5] if len(p) > 5 else '')
+            user = db.get_user(user_id)
+            user_name = user['name'] if user and 'name' in user.keys() else str(user_id)
+            txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {html.escape(str(user_name))} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
+        except Exception:
+            continue
 
     txt += "\n💡 Use /givepremium <user_id> <days> to activate"
     bot.reply_to(m, txt)
@@ -1942,8 +1930,16 @@ def cmd_redeemlist(m):
         return
     txt = "💰 <b>PENDING REDEEMS</b>\n\n"
     for r in requests_list[:10]:
-        # request_id, user_id, username, points, amount_inr, upi_id, status, created_at, paid_at
-        txt += f"ID: {r['request_id']} \nUser: {r['username']} ({r['user_id']})\nPoints: {r['points']} → ₹{r['amount_inr']}\nUPI: {r['upi_id']}\n\n"
+        try:
+            request_id = r['request_id'] if 'request_id' in r.keys() else r[0]
+            username = r['username'] if 'username' in r.keys() else r[2]
+            user_id = r['user_id'] if 'user_id' in r.keys() else r[1]
+            points = r['points'] if 'points' in r.keys() else r[3]
+            amount_inr = r['amount_inr'] if 'amount_inr' in r.keys() else r[4]
+            upi_id = r['upi_id'] if 'upi_id' in r.keys() else r[5]
+            txt += f"ID: {request_id} \nUser: {username} ({user_id})\nPoints: {points} → ₹{amount_inr}\nUPI: {upi_id}\n\n"
+        except Exception:
+            continue
     txt += "Use /redeempay <id> to mark as paid"
     bot.reply_to(m, txt)
 
@@ -2348,7 +2344,6 @@ def handle_state(m):
 # ---------------------------
 # ForceReply handler for legacy "Found It!" flow (still supported)
 # ---------------------------
-# Replace the broken decorator+handler with this valid code:
 
 @bot.message_handler(
     func=lambda m: (
@@ -2463,9 +2458,15 @@ def callback(c):
     if data == "leaderboard":
         top = db.get_top_players(10)
         txt = "🏆 <b>TOP 10</b>\n\n"
-        for i, (name, score, level, is_prem) in enumerate(top, 1):
-            badge = " 👑" if is_prem else ""
-            txt += f"{i}. {html.escape(name)}{badge} • {score} pts\n"
+        for i, row in enumerate(top, 1):
+            try:
+                name = row[0]
+                score = row[1]
+            except Exception:
+                name = str(row)
+                score = 0
+            badge = " 👑" if (row[3] if len(row) > 3 else False) else ""
+            txt += f"{i}. {html.escape(str(name))}{badge} • {score} pts\n"
         try:
             bot.send_message(uid, txt)
             bot.answer_callback_query(c.id, "Sent to PM!")
@@ -2477,12 +2478,25 @@ def callback(c):
     if data == "profile":
         user = db.get_user(uid)
         premium_badge = " 👑 PREMIUM" if db.is_premium(uid) else " 🔓 FREE"
+        # safe extraction
+        name = user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User')
+        level = user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)
+        xp = user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)
+        total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)
+        hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)
+        wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)
+        games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)
+        words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)
+        streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+
         txt = (f"👤 <b>PROFILE</b>\n\n"
-               f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'User'))}{premium_badge}\n"
-               f"Level: {user['level'] if user and 'level' in user.keys() else (user[9] if user else 1)} | XP: {user['xp'] if user and 'xp' in user.keys() else (user[10] if user else 0)}\n"
-               f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
-               f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-               f"Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)} | Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else...")
+               f"Name: {html.escape(name)}{premium_badge}\n"
+               f"Level: {level} | XP: {xp}\n"
+               f"Score: {total_score} pts\n"
+               f"Balance: {hint_balance} pts\n"
+               f"Wins: {wins} | Games: {games_played}\n"
+               f"Words Found: {words_found}\n"
+               f"Streak: {streak} days 🔥")
         try:
             bot.send_message(uid, txt)
             bot.answer_callback_query(c.id, "Sent to PM!")
@@ -2714,7 +2728,8 @@ def callback(c):
         user = db.get_user(uid)
 
         cost = 25 if db.is_premium(uid) else HINT_COST
-        if (user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)) < cost:
+        user_hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)
+        if user_hint_balance < cost:
             bot.answer_callback_query(c.id, f"Need {cost} pts!", show_alert=True)
             return
         game = games[cid]
@@ -2732,7 +2747,7 @@ def callback(c):
         else:
             hint_text = f"💡 <b>Hint:</b> <code>{reveal}</code> (-{cost} pts)"
 
-        db.update_user(uid, hint_balance=(user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user and len(user) > 7 else 0)) - cost)
+        db.update_user(uid, hint_balance=user_hint_balance - cost)
         bot.send_message(cid, hint_text)
         bot.answer_callback_query(c.id)
         return
@@ -2748,8 +2763,11 @@ def callback(c):
         scores = sorted(game.players.items(), key=lambda x: x[1], reverse=True)
         txt = "📊 <b>CURRENT SCORES</b>\n\n"
         for i, (u, pts) in enumerate(scores, 1):
-            name = db.get_user(u)['name'] if db.get_user(u) and 'name' in db.get_user(u).keys() else str(u)
-            txt += f"{i}. {html.escape(name)} - {pts} pts\n"
+            try:
+                name = db.get_user(u)['name'] if db.get_user(u) and 'name' in db.get_user(u).keys() else str(u)
+            except Exception:
+                name = str(u)
+            txt += f"{i}. {html.escape(str(name))} - {pts} pts\n"
         bot.send_message(cid, txt)
         bot.answer_callback_query(c.id)
         return
