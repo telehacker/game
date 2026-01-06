@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 WORD VORTEX ULTIMATE v10.5 - FIXED & ENHANCED (syntax + runtime robustness fixes)
-
-See commit message for summary of fixes applied in this file.
 """
 
 import os
@@ -94,7 +92,7 @@ REFERRAL_MIN_WORDS = 3
 # Bad words set for review moderation
 BAD_WORDS = {"SEX", "PORN", "NUDE", "XXX", "DICK", "COCK", "PUSSY", "FUCK", "SHIT", "BITCH", "ASS", "HENTAI", "BOOBS"}
 
-# ACHIEVEMENTS - extended with more entries per user request
+# ACHIEVEMENTS
 ACHIEVEMENTS = {
     "streak_master": {"icon": "🏆", "name": "Streak Master", "desc": "Claim daily 7 days in a row", "reward": 500},
     "first_blood": {"icon": "⚡", "name": "First Blood", "desc": "Get first find in a game", "reward": 50},
@@ -135,7 +133,7 @@ COMBO_MESSAGES = [
     "DOUBLE KILL! 🔥",
 ]
 
-# Shop items (preserved)
+# Shop items
 SHOP_ITEMS = {
     "xp_booster": {"name": "🚀 XP Booster 2x (30 days)", "price": 199, "type": "xp_boost", "value": 30},
     "premium_1d": {"name": "👑 Premium 1 Day", "price": 49, "type": "premium", "value": 1},
@@ -761,6 +759,53 @@ class Database:
 
 db = Database()
 
+# ---------------------------
+# Helper: display name resolution (DB preferred, else Telegram lookup)
+# ---------------------------
+def get_display_name(user_id: int) -> str:
+    """
+    Return a human-friendly display name for a Telegram user id.
+    Preference order:
+      1) DB stored name if meaningful (not "Player" and not empty)
+      2) Telegram API (first_name + last_name) or @username if available — also update DB for future
+      3) fallback to numeric id as string
+    """
+    try:
+        row = db.get_user(user_id)
+        if row:
+            name = row['name'] if 'name' in row.keys() else None
+            if name and name.strip() and name.strip().lower() != "player":
+                return name
+        # Try Telegram API
+        try:
+            tg = bot.get_chat(user_id)
+            # prefer full name
+            name_parts = []
+            if getattr(tg, "first_name", None):
+                name_parts.append(tg.first_name)
+            if getattr(tg, "last_name", None):
+                name_parts.append(tg.last_name)
+            if name_parts:
+                real_name = " ".join(name_parts).strip()
+                try:
+                    db.update_user(user_id, name=real_name)
+                except Exception:
+                    pass
+                return real_name
+            if getattr(tg, "username", None):
+                uname = "@" + tg.username
+                try:
+                    db.update_user(user_id, name=uname)
+                except Exception:
+                    pass
+                return uname
+        except Exception:
+            # Telegram lookup may fail if bot hasn't seen the user
+            pass
+    except Exception:
+        pass
+    return str(user_id)
+
 # Global uncaught exception handler: log to DB and logger
 def handle_uncaught(exc_type, exc, exc_tb):
     tb = "".join(traceback.format_exception(exc_type, exc, exc_tb))
@@ -1215,7 +1260,8 @@ def end_game(chat_id, reason: str = "finished"):
                 winner_user = db.get_user(winner[0])
                 prev_wins = winner_user['wins'] if winner_user and 'wins' in winner_user.keys() else (winner_user[5] if winner_user and len(winner_user) > 5 else 0)
                 db.update_user(winner[0], wins=prev_wins + 1)
-                winner_name = winner_user['name'] if winner_user and 'name' in winner_user.keys() else str(winner[0])
+                # use display name helper
+                winner_name = get_display_name(winner[0])
                 bot.send_message(chat_id, f"🏆 <b>GAME COMPLETE!</b>\n\nWinner: {html.escape(winner_name)}\nScore: {winner[1]} pts\nReason: {reason}")
                 if session.game_id:
                     try:
@@ -1599,7 +1645,7 @@ def cmd_leaderboard(m):
         # row is sqlite3.Row with (user_id, name, total_score, level, is_premium)
         try:
             uid = row[0]
-            name = row[1] or (db.get_user(uid)['name'] if db.get_user(uid) and 'name' in db.get_user(uid).keys() else str(uid))
+            name = get_display_name(uid)
             score = row[2]
             level = row[3]
             is_prem = bool(row[4])
@@ -2161,13 +2207,12 @@ def ai_add(message):
             pass
 
 # ---------------------------
-# FEATURE PACK UPLOAD (owner-only, safe JSON)
+# FEATURE PACK UPLOAD (owner/admin, safe JSON)
 # ---------------------------
 @bot.message_handler(commands=['upload_feature_pack'])
 def cmd_upload_feature_pack(m):
     """
-    Owner can upload a JSON file (as document) with theme/messages/shop entries.
-    Example: {"name":"summer","themes":{"gold":{"footer":"VIP • Summer"}}}
+    Owner or admin can upload a JSON file (as document) with theme/messages/shop entries.
     This is safe: only JSON content is accepted, no code executed.
     """
     if not is_owner_or_admin(m.from_user.id):
@@ -2218,7 +2263,7 @@ def handle_feature_pack_upload(m):
             del user_states[uid]
 
 # ---------------------------
-# PATCH UPLOAD (owner-only)
+# PATCH UPLOAD (owner/admin)
 # ---------------------------
 @bot.message_handler(commands=['upload_patch'])
 def cmd_upload_patch(m):
@@ -2528,7 +2573,7 @@ def callback(c):
         for i, row in enumerate(top, 1):
             try:
                 uid_row = row[0]
-                name = row[1] or (db.get_user(uid_row)['name'] if db.get_user(uid_row) and 'name' in db.get_user(uid_row).keys() else str(uid_row))
+                name = get_display_name(uid_row)
                 score = row[2]
             except Exception:
                 name = str(row)
@@ -2834,7 +2879,7 @@ def callback(c):
         txt = "📊 <b>CURRENT SCORES</b>\n\n"
         for i, (u, pts) in enumerate(scores, 1):
             try:
-                name = db.get_user(u)['name'] if db.get_user(u) and 'name' in db.get_user(u).keys() else str(u)
+                name = get_display_name(u)
             except Exception:
                 name = str(u)
             txt += f"{i}. {html.escape(str(name))} - {pts} pts\n"
@@ -3052,7 +3097,7 @@ def cmd_leaderboard_image(m):
         for i,row in enumerate(top,1):
             try:
                 uid = row[0]
-                name = row[1] or (db.get_user(uid)['name'] if db.get_user(uid) and 'name' in db.get_user(uid).keys() else str(uid))
+                name = get_display_name(uid)
                 score = row[2]
                 level = row[3]
                 is_prem = bool(row[4])
