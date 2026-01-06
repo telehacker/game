@@ -438,9 +438,13 @@ class Database:
         conn.close()
 
     def get_top_players(self, limit=10):
+        """
+        Return rows with user_id, name, total_score, level, is_premium
+        so callers can reliably show names (or lookup when missing).
+        """
         conn = self._conn()
         c = conn.cursor()
-        c.execute("SELECT name, total_score, level, is_premium FROM users ORDER BY total_score DESC LIMIT ?", (limit,))
+        c.execute("SELECT user_id, name, total_score, level, is_premium FROM users ORDER BY total_score DESC LIMIT ?", (limit,))
         rows = c.fetchall()
         conn.close()
         return rows
@@ -767,6 +771,15 @@ def handle_uncaught(exc_type, exc, exc_tb):
     logger.error("Uncaught exception: %s", tb)
 
 sys.excepthook = handle_uncaught
+
+# Helper: owner or admin
+def is_owner_or_admin(user_id: int) -> bool:
+    try:
+        if OWNER_ID and user_id == OWNER_ID:
+            return True
+    except Exception:
+        pass
+    return db.is_admin(user_id)
 
 # ---------------------------
 # IMAGE RENDERER
@@ -1583,12 +1596,13 @@ def cmd_leaderboard(m):
     txt = "🏆 <b>TOP 10 PLAYERS</b>\n\n"
     medals = ["🥇","🥈","🥉"]
     for i, row in enumerate(top, 1):
-        # row is sqlite3.Row with (name, total_score, level, is_premium)
+        # row is sqlite3.Row with (user_id, name, total_score, level, is_premium)
         try:
-            name = row[0]
-            score = row[1]
-            level = row[2]
-            is_prem = bool(row[3])
+            uid = row[0]
+            name = row[1] or (db.get_user(uid)['name'] if db.get_user(uid) and 'name' in db.get_user(uid).keys() else str(uid))
+            score = row[2]
+            level = row[3]
+            is_prem = bool(row[4])
         except Exception:
             # fallback
             name = str(row)
@@ -2156,7 +2170,7 @@ def cmd_upload_feature_pack(m):
     Example: {"name":"summer","themes":{"gold":{"footer":"VIP • Summer"}}}
     This is safe: only JSON content is accepted, no code executed.
     """
-    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+    if not is_owner_or_admin(m.from_user.id):
         bot.reply_to(m, "Unauthorized")
         return
     bot.reply_to(m, "✅ Send JSON file as document now (only JSON, <= 200 KB).")
@@ -2208,7 +2222,7 @@ def handle_feature_pack_upload(m):
 # ---------------------------
 @bot.message_handler(commands=['upload_patch'])
 def cmd_upload_patch(m):
-    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+    if not is_owner_or_admin(m.from_user.id):
         bot.reply_to(m, "Unauthorized")
         return
     bot.reply_to(m, "✅ Send patch file as document now (only text/patch, <= 500 KB). It will be saved to DB. No code will be executed.")
@@ -2247,7 +2261,7 @@ def handle_patch_upload(m):
 
 @bot.message_handler(commands=['create_patch_issue'])
 def cmd_create_patch_issue(m):
-    if not db.is_admin(m.from_user.id):
+    if not db.is_admin(m.from_user.id) and not (OWNER_ID and m.from_user.id == OWNER_ID):
         return
     args = m.text.split()
     if len(args) < 2:
@@ -2513,12 +2527,13 @@ def callback(c):
         txt = "🏆 <b>TOP 10</b>\n\n"
         for i, row in enumerate(top, 1):
             try:
-                name = row[0]
-                score = row[1]
+                uid_row = row[0]
+                name = row[1] or (db.get_user(uid_row)['name'] if db.get_user(uid_row) and 'name' in db.get_user(uid_row).keys() else str(uid_row))
+                score = row[2]
             except Exception:
                 name = str(row)
                 score = 0
-            badge = " 👑" if (row[3] if len(row) > 3 else False) else ""
+            badge = " 👑" if (row[4] if len(row) > 4 else False) else ""
             txt += f"{i}. {html.escape(str(name))}{badge} • {score} pts\n"
         try:
             bot.send_message(uid, txt)
@@ -3034,7 +3049,18 @@ def cmd_leaderboard_image(m):
 
         draw.text((20,10),"🏆 TOP PLAYERS", fill="#ffd700", font=font)
         y = 50
-        for i,(name,score,level,is_prem) in enumerate(top,1):
+        for i,row in enumerate(top,1):
+            try:
+                uid = row[0]
+                name = row[1] or (db.get_user(uid)['name'] if db.get_user(uid) and 'name' in db.get_user(uid).keys() else str(uid))
+                score = row[2]
+                level = row[3]
+                is_prem = bool(row[4])
+            except Exception:
+                name = str(row)
+                score = 0
+                level = 1
+                is_prem = False
             txt = f"{i}. {name}{' 👑' if is_prem else ''} — {score} pts (L{level})"
             draw.text((20,y), txt, fill="#e6eef8", font=font)
             y += 34
