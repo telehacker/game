@@ -1534,22 +1534,31 @@ def cmd_stop(m):
 @bot.message_handler(commands=['stats','profile'])
 def cmd_stats(m):
     user = db.get_user(m.from_user.id, m.from_user.first_name)
-    level = user['level'] if user and 'level' in user.keys() else (user[9] if user and len(user) > 9 else 1)
-    xp = user['xp'] if user and 'xp' in user.keys() else (user[10] if user and len(user) > 10 else 0)
+    level = user['level'] if user and 'level' in user.keys() else 1
+    xp = user['xp'] if user and 'xp' in user.keys() else 0
     xp_needed = level * 1000
     xp_progress = (xp / xp_needed * 100) if xp_needed > 0 else 0
 
     premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
+    # Normalize fields safely (support sqlite3.Row or tuple fallback)
+    name = html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player'))
+    total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)
+    hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)
+    games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)
+    wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)
+    words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)
+    streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+
     txt = (f"👤 <b>PROFILE</b>\n\n"
-           f"Name: {html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player'))}{premium_badge}\n"
+           f"Name: {name}{premium_badge}\n"
            f"Level: {level} 🏅\n"
            f"XP: {xp}/{xp_needed} ({xp_progress:.1f}%)\n\n"
-           f"Score: {user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)} pts\n"
-           f"Balance: {user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)} pts\n"
-           f"Games: {user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)} • Wins: {user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)}\n"
-           f"Words Found: {user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)}\n"
-           f"Streak: {user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)} days 🔥")
+           f"Score: {total_score} pts\n"
+           f"Balance: {hint_balance} pts\n"
+           f"Games: {games_played} • Wins: {wins}\n"
+           f"Words Found: {words_found}\n"
+           f"Streak: {streak} days 🔥")
     bot.reply_to(m, txt)
 
 @bot.message_handler(commands=['leaderboard','lb'])
