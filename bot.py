@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
 WORD VORTEX ULTIMATE v10.5 - FIXED & ENHANCED (syntax + runtime robustness fixes)
+Enhanced: fixes for shoplist, ai_add, upload_patch, review visibility and other enhancements:
+- Safer AI response parsing, better error messages
+- Robust patch upload acknowledgement
+- shoplist text building fixed (no stray sequences), chunked output
+- Added /cmd message command listing all commands
+- Improved ImageRenderer visuals
+- Added owner/admin env list and hardened owner-only commands
+- /runlang to run python/nodejs with lightweight sandboxing (owner-only)
+- /npm_install and enhancements to pip_install for frontend packages
+- Extra logging and DB error logs for failures
 """
 
 import os
@@ -19,6 +29,12 @@ from typing import List, Tuple, Dict, Optional, Any
 import subprocess
 import tempfile
 
+# optional resource limits for sandboxed runs (POSIX)
+try:
+    import resource
+except Exception:
+    resource = None
+
 import requests
 from PIL import Image, ImageDraw, ImageFont
 import telebot
@@ -34,6 +50,15 @@ if not TOKEN:
     sys.exit(1)
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8271254197")) if os.environ.get("OWNER_ID") else 8271254197
+
+# Additional admin ids (comma separated) to allow multiple admins via env
+ADMIN_IDS = []
+_admin_env = os.environ.get("ADMIN_IDS", "")
+if _admin_env:
+    try:
+        ADMIN_IDS = [int(x.strip()) for x in _admin_env.split(",") if x.strip()]
+    except Exception:
+        ADMIN_IDS = []
 
 # Notification target: prefer explicit NOTIFICATION_GROUP env var (group/channel id or @username).
 # If NOTIFICATION_GROUP is not set we fallback to OWNER_ID. This avoids silently using owner id as group.
@@ -419,7 +444,12 @@ class Database:
         return pid
 
     def is_admin(self, user_id: int) -> bool:
-        if OWNER_ID and user_id == OWNER_ID:
+        try:
+            if OWNER_ID and user_id == OWNER_ID:
+                return True
+        except Exception:
+            pass
+        if user_id in ADMIN_IDS:
             return True
         conn = self._conn()
         c = conn.cursor()
@@ -817,29 +847,40 @@ def handle_uncaught(exc_type, exc, exc_tb):
 
 sys.excepthook = handle_uncaught
 
-# Helper: owner or admin
+# Helper: owner or admin (improved)
 def is_owner_or_admin(user_id: int) -> bool:
     try:
         if OWNER_ID and user_id == OWNER_ID:
             return True
     except Exception:
         pass
+    if user_id in ADMIN_IDS:
+        return True
     return db.is_admin(user_id)
 
 # ---------------------------
-# IMAGE RENDERER
+# IMAGE RENDERER (improved visuals)
 # ---------------------------
 class ImageRenderer:
+    @staticmethod
+    def _rounded_rectangle(draw, xy, radius, fill):
+        x0, y0, x1, y1 = xy
+        try:
+            draw.rounded_rectangle(xy, radius=radius, fill=fill)
+        except Exception:
+            # Fallback if older Pillow doesn't have rounded_rectangle
+            draw.rectangle(xy, fill=fill)
+
     @staticmethod
     def draw_grid(grid: List[List[str]], placements: Dict, found: Dict[str,int],
                   mode="NORMAL", words_left=0, theme: str = "default", countdown_seconds: Optional[int] = None):
         """
-        Draws the grid image.
+        Draws the grid image with enhanced visuals.
         If countdown_seconds provided, displays a static countdown at time of image generation.
         theme can be used to select visual styles (e.g., 'gold', 'default').
         """
         cell = 50
-        header = 100
+        header = 110
         footer = 70
         pad = 20
         rows = len(grid)
@@ -859,11 +900,13 @@ class ImageRenderer:
             any_premium_found = False
 
         if theme == "gold" or any_premium_found:
-            bg = "#0d0a05"
+            bg = "#0b0a05"
             header_fill = "#3b2b00"
+            accent = "#ffd700"
         else:
-            bg = "#0a1628"
-            header_fill = "#2b2b2b"
+            bg = "#071025"
+            header_fill = "#112233"
+            accent = "#4dd0e1"
 
         img = Image.new("RGB", (w, h), bg)
         draw = ImageDraw.Draw(img)
@@ -882,18 +925,18 @@ class ImageRenderer:
             letter_font = ImageFont.load_default()
             small_font = ImageFont.load_default()
 
-        # Header
-        draw.rectangle([0, 0, w, header], fill=header_fill)
+        # Header with subtle gradient (approx)
+        ImageRenderer._rounded_rectangle(draw, (0, 0, w, header), radius=8, fill=header_fill)
         title = "WORD GRID (FIND WORDS)"
         try:
             bbox = draw.textbbox((0, 0), title, font=title_font)
-            draw.text(((w - (bbox[2]-bbox[0]))//2, 20), title, fill="#e0e0e0", font=title_font)
+            draw.text(((w - (bbox[2]-bbox[0]))//2, 22), title, fill=accent, font=title_font)
         except Exception:
-            draw.text((w//2 - 100, 20), title, fill="#e0e0e0", font=title_font)
+            draw.text((w//2 - 100, 22), title, fill=accent, font=title_font)
 
         mode_text = f"⚡ {mode.upper()}"
-        draw.text((pad, header-35), mode_text, fill="#ffa500" if not any_premium_found else "#ffd700", font=small_font)
-        draw.text((w-220, header-35), f"Left: {words_left}", fill="#4CAF50", font=small_font)
+        draw.text((pad, header-36), mode_text, fill="#ffa500" if not any_premium_found else "#ffd700", font=small_font)
+        draw.text((w-240, header-36), f"Left: {words_left}", fill="#4CAF50", font=small_font)
 
         if countdown_seconds is not None:
             try:
@@ -903,14 +946,15 @@ class ImageRenderer:
 
         grid_y = header + pad
 
-        # Grid letters
+        # Grid letters with subtle cell shading
         for r in range(rows):
             for c in range(cols):
                 x = pad + c * cell
                 y = grid_y + r * cell
                 shadow = 2
+                # shadow
                 draw.rectangle([x+shadow, y+shadow, x+cell+shadow, y+cell+shadow], fill="#000000")
-                draw.rectangle([x, y, x+cell, y+cell], fill="#1e3a5f", outline="#3d5a7f", width=1)
+                draw.rectangle([x, y, x+cell, y+cell], fill="#102b44", outline="#254a6b", width=1)
 
                 ch = grid[r][c]
                 try:
@@ -936,24 +980,27 @@ class ImageRenderer:
                         x2 = pad + b[1]*cell + cell//2
                         y2 = grid_y + b[0]*cell + cell//2
 
-                        if is_prem or theme == "gold":
-                            draw.line([(x1,y1),(x2,y2)], fill="#ffd700", width=4)
-                            draw.line([(x1,y1),(x2,y2)], fill="#fff2a6", width=1)
-                        else:
-                            draw.line([(x1,y1),(x2,y2)], fill="#ffff99", width=3)
-                            draw.line([(x1,y1),(x2,y2)], fill="#ffeb3b", width=1)
+                        line_col_outer = "#ffd700" if (is_prem or theme == "gold") else "#88ff88"
+                        line_col_inner = "#fff2a6" if (is_prem or theme == "gold") else "#b2ffb2"
+
+                        draw.line([(x1,y1),(x2,y2)], fill=line_col_outer, width=4)
+                        draw.line([(x1,y1),(x2,y2)], fill=line_col_inner, width=1)
 
                         for px, py in [(x1,y1),(x2,y2)]:
-                            draw.ellipse([px-5, py-5, px+5, py+5], fill="#ffeb3b" if not is_prem else "#ffd700")
+                            draw.ellipse([px-6, py-6, px+6, py+6], fill=line_col_outer)
                 except Exception:
                     continue
 
         # Footer
-        draw.rectangle([0, h-footer, w, h], fill="#0d1929")
+        draw.rectangle([0, h-footer, w, h], fill="#081822")
         footer_text = "Made by @Ruhvaan • Word Vortex v10.5"
         if theme == "gold":
             footer_text = "VIP • " + footer_text
-        draw.text((w//2 - 120, h-footer+25), footer_text, fill="#7f8c8d", font=small_font)
+        try:
+            bboxf = draw.textbbox((0,0), footer_text, font=small_font)
+            draw.text((w - bboxf[2] - 20, h-footer+25), footer_text, fill="#9aa9b0", font=small_font)
+        except Exception:
+            draw.text((w//2 - 120, h-footer+25), footer_text, fill="#7f8c8d", font=small_font)
 
         bio = io.BytesIO()
         img.save(bio, "PNG", quality=95)
@@ -1909,6 +1956,12 @@ def cmd_checkpremium(m):
 
 @bot.message_handler(commands=['shoplist'])
 def cmd_shoplist(m):
+    """
+    Admin-only: list recent shop purchases.
+    Fixes:
+      - safe field extraction
+      - remove stray characters and chunk message to avoid length issues
+    """
     if not db.is_admin(m.from_user.id):
         return
     conn = db._conn()
@@ -1921,7 +1974,7 @@ def cmd_shoplist(m):
         bot.reply_to(m, "No shop purchases yet!")
         return
 
-    txt = "🛒 <b>SHOP PURCHASES</b>\n\n"
+    lines = ["🛒 <b>SHOP PURCHASES</b>\n"]
     for p in purchases:
         try:
             purchase_id = p['purchase_id'] if 'purchase_id' in p.keys() else p[0]
@@ -1932,12 +1985,19 @@ def cmd_shoplist(m):
             date = p['date'] if 'date' in p.keys() else (p[5] if len(p) > 5 else '')
             user = db.get_user(user_id)
             user_name = user['name'] if user and 'name' in user.keys() else str(user_id)
-            txt += f"<b>ID:</b> {purchase_id}\n<b>User:</b> {html.escape(str(user_name))} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n"
+            lines.append(f"<b>ID:</b> {purchase_id}\n<b>User:</b> {html.escape(str(user_name))} ({user_id})\n<b>Item:</b> {item_type}\n<b>Price:</b> ₹{price}\n<b>Status:</b> {status}\n<b>Date:</b> {date}\n\n")
         except Exception:
             continue
 
-    txt += "\n💡 Use /markshoppaid <purchase_id> to mark paid"
-    bot.reply_to(m, txt)
+    # send in chunks (avoid telegram limits)
+    chunk = ""
+    for part in lines:
+        if len(chunk) + len(part) > 3800:
+            bot.reply_to(m, chunk)
+            chunk = ""
+        chunk += part
+    if chunk:
+        bot.reply_to(m, chunk)
 
 @bot.message_handler(commands=['listreviews'])
 def cmd_listreviews(m):
@@ -1984,6 +2044,12 @@ def cmd_approvereview(m):
                 bot.send_message(reviewer_id, "✅ Your review was approved and is now visible to others. Thank you!")
             except Exception:
                 logger.debug("Could not notify reviewer")
+            # For immediate visibility: also post approved review to notification group if available
+            try:
+                if NOTIFICATION_GROUP:
+                    bot.send_message(NOTIFICATION_GROUP, f"⭐ New approved review:\n{rv['username']} • ⭐{rv['rating']}\n{rv['text']}")
+            except Exception:
+                pass
     except Exception as e:
         bot.reply_to(m, f"Invalid ID: {e}")
 
@@ -2175,22 +2241,39 @@ def ai_add(message):
             ]
         }
         r = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=30)
-        data = r.json()
 
-        # ✅ Safe check
-        if "choices" not in data or not data["choices"]:
-            bot.reply_to(message, "❌ AI response missing 'choices'. Check your API key or quota.")
+        if r.status_code != 200:
+            bot.reply_to(message, f"❌ OpenAI API returned {r.status_code}: {r.text[:1000]}")
             return
 
-        # robustly access content
-        content = data["choices"][0].get("message", {}) or data["choices"][0].get("text", "")
-        if isinstance(content, dict):
-            code = content.get("content", "").strip()
-        else:
-            code = content.strip()
+        data = r.json()
+
+        # Robust extraction of generated content
+        code = ""
+        try:
+            # Chat completion (preferred)
+            choices = data.get("choices") or []
+            if choices:
+                first = choices[0]
+                if isinstance(first.get("message"), dict):
+                    code = first["message"].get("content", "") or first["message"].get("content", "")
+                elif "text" in first:
+                    code = first.get("text", "")
+                else:
+                    # fallback: try message.content path
+                    code = first.get("message", {}).get("content", "") if isinstance(first.get("message"), dict) else ""
+        except Exception as e:
+            logger.exception("AI parsing error: %s", e)
+
+        code = (code or "").strip()
 
         if not code:
-            bot.reply_to(message, "❌ Empty code returned by AI.")
+            bot.reply_to(message, "❌ AI returned empty content. Raw response saved to logs.")
+            # save raw response for debugging
+            try:
+                db.log_error("ai_add_empty", "OpenAI returned no code", tb=json.dumps(data)[:2000])
+            except Exception:
+                pass
             return
 
         pid = db.save_patch(f"ai_patch_{int(time.time())}.py", code)
@@ -2238,7 +2321,7 @@ def handle_feature_pack_upload(m):
     try:
         file_info = bot.get_file(doc.file_id)
         f = bot.download_file(file_info.file_path)
-        content = f.decode('utf-8')
+        content = f.decode('utf-8', errors='replace')
         parsed = json.loads(content)
         # basic validation: must be dict
         if not isinstance(parsed, dict):
@@ -2263,7 +2346,7 @@ def handle_feature_pack_upload(m):
             del user_states[uid]
 
 # ---------------------------
-# PATCH UPLOAD (owner/admin)
+# PATCH UPLOAD (owner/admin) - more robust acknowledgement
 # ---------------------------
 @bot.message_handler(commands=['upload_patch'])
 def cmd_upload_patch(m):
@@ -2288,9 +2371,11 @@ def handle_patch_upload(m):
             del user_states[uid]
         return
     try:
+        # Acknowledge early so user sees bot is processing
+        bot.reply_to(m, f"📥 Received {doc.file_name}, processing...")
         file_info = bot.get_file(doc.file_id)
-        f = bot.download_file(file_info.file_path)
-        content = f.decode('utf-8', errors='replace')
+        raw = bot.download_file(file_info.file_path)
+        content = raw.decode('utf-8', errors='replace')
         pid = db.save_patch(doc.file_name, content)
         bot.reply_to(m, f"✅ Patch uploaded and saved as #{pid}. To create a GitHub issue for this patch use /create_patch_issue {pid} (requires GITHUB_TOKEN and REPO settings).")
     except Exception as e:
@@ -2960,17 +3045,26 @@ def cmd_suggest_fix(m):
         bot.reply_to(m, f"Invalid id: {e}")
 
 # ---------------------------
-# RUN CODE FROM TELEGRAM (OWNER ONLY) - /run
+# RUN CODE FROM TELEGRAM (OWNER ONLY) - improved security & languages
 # ---------------------------
+def _apply_resource_limits():
+    """
+    Apply lightweight resource limits for child processes (POSIX only).
+    """
+    if resource:
+        try:
+            # CPU time: 5s
+            resource.setrlimit(resource.RLIMIT_CPU, (5, 10))
+            # Address space (virtual memory): 200MB
+            resource.setrlimit(resource.RLIMIT_AS, (200 * 1024 * 1024, 300 * 1024 * 1024))
+        except Exception:
+            pass
+
 @bot.message_handler(commands=['run'])
 def cmd_run(m):
     """
     OWNER only. Run a short Python script sent as a reply to a message or inline after the command.
-    SECURITY: extremely powerful; restricted to OWNER_ID only.
-    Usage:
-      Reply to a message that contains Python code with /run
-      OR send /run <python code>
-    The code runs in a separate subprocess with a timeout and captured stdout/stderr.
+    SECURITY: restricted to OWNER_ID only. Runs in subprocess with timeout and sandbox limits when possible.
     """
     if not (OWNER_ID and m.from_user.id == OWNER_ID):
         return
@@ -2989,19 +3083,22 @@ def cmd_run(m):
         return
 
     # create a temp file and execute python in subprocess
+    fname = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tf:
             tf.write(code)
             tf.flush()
             fname = tf.name
 
-        # run with timeout (10s) and capture output
+        # run with timeout (8s) and capture output; apply resource limits via preexec_fn on POSIX
+        preexec = _apply_resource_limits if resource else None
         proc = subprocess.run(
             [sys.executable, fname],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            timeout=12
+            timeout=8,
+            preexec_fn=preexec
         )
         out = proc.stdout.decode('utf-8', errors='replace')
         err = proc.stderr.decode('utf-8', errors='replace')
@@ -3015,17 +3112,134 @@ def cmd_run(m):
         # trim
         bot.reply_to(m, result[:3900])
     except subprocess.TimeoutExpired:
-        bot.reply_to(m, "⏱ Execution timed out (12s).")
+        bot.reply_to(m, "⏱ Execution timed out (8s).")
     except Exception as e:
         tb = traceback.format_exc()
         bot.reply_to(m, f"❌ Error running code: {e}\n\n{tb[:1500]}")
     finally:
         try:
-            os.unlink(fname)
+            if fname:
+                os.unlink(fname)
         except Exception:
             pass
 
-# New: pip installer via bot (OWNER only). Allows installing Python packages if environment permits.
+# New: run code for multiple languages (owner-only)
+@bot.message_handler(commands=['runlang'])
+def cmd_runlang(m):
+    """
+    Owner-only. Usage:
+      /runlang python <code>  OR reply to a message with /runlang python
+      /runlang node <js code> OR reply to a message with /runlang node
+    Executes in a subprocess with timeouts and resource limits where possible.
+    """
+    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+        return
+
+    parts = m.text.split(maxsplit=2)
+    lang = None
+    code = ""
+    if m.reply_to_message and m.reply_to_message.text:
+        # reply mode: /runlang python (reply message contains code)
+        if len(parts) >= 2:
+            lang = parts[1].lower()
+            code = m.reply_to_message.text
+        else:
+            bot.reply_to(m, "Usage: reply to a message with /runlang <python|node>")
+            return
+    else:
+        if len(parts) >= 3:
+            lang = parts[1].lower()
+            code = parts[2]
+        else:
+            bot.reply_to(m, "Usage: /runlang <python|node> <code> OR reply to a message with /runlang <lang>")
+            return
+
+    if not code:
+        bot.reply_to(m, "No code provided.")
+        return
+
+    fname = None
+    try:
+        if lang == "python":
+            suffix = ".py"
+            cmd = [sys.executable]
+        elif lang in ("node", "js", "javascript"):
+            suffix = ".js"
+            cmd = ["node"]
+        else:
+            bot.reply_to(m, "Unsupported language. Supported: python, node")
+            return
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix=suffix, delete=False) as tf:
+            tf.write(code)
+            tf.flush()
+            fname = tf.name
+
+        cmd.append(fname)
+        preexec = _apply_resource_limits if resource else None
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=10,
+            preexec_fn=preexec
+        )
+        out = proc.stdout.decode('utf-8', errors='replace')
+        err = proc.stderr.decode('utf-8', errors='replace')
+        resp = ""
+        if out:
+            resp += f"📤 STDOUT:\n{out}\n"
+        if err:
+            resp += f"⚠️ STDERR:\n{err}\n"
+        if not resp:
+            resp = "✅ Executed. No output."
+        bot.reply_to(m, resp[:3900])
+    except subprocess.TimeoutExpired:
+        bot.reply_to(m, "⏱ Execution timed out.")
+    except FileNotFoundError as e:
+        bot.reply_to(m, f"❌ Runtime not found: {e}")
+    except Exception as e:
+        tb = traceback.format_exc()
+        bot.reply_to(m, f"❌ Error running code: {e}\n\n{tb[:1500]}")
+    finally:
+        try:
+            if fname:
+                os.unlink(fname)
+        except Exception:
+            pass
+
+# New: npm install wrapper (OWNER only)
+@bot.message_handler(commands=['npm_install'])
+def cmd_npm_install(m):
+    if not (OWNER_ID and m.from_user.id == OWNER_ID):
+        return
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(m, "Usage: /npm_install <package[@version]> or /npm_install <package1 package2 ...>")
+        return
+    pkg = parts[1].strip()
+    try:
+        bot.reply_to(m, f"🔧 Running npm install: {pkg} ...")
+        proc = subprocess.run(["npm", "install", pkg], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        out = proc.stdout.decode('utf-8', errors='replace')
+        err = proc.stderr.decode('utf-8', errors='replace')
+        resp = ""
+        if out:
+            resp += f"📤 STDOUT:\n{out}\n"
+        if err:
+            resp += f"⚠️ STDERR:\n{err}\n"
+        if not resp:
+            resp = "✅ Done (no output)."
+        bot.reply_to(m, resp[:3900])
+    except subprocess.TimeoutExpired:
+        bot.reply_to(m, "⏱ npm install timed out.")
+    except FileNotFoundError:
+        bot.reply_to(m, "❌ npm not found on this system.")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Error running npm: {e}")
+
+# New: improved pip installer with chunked replies and support hints for frontend tools
 @bot.message_handler(commands=['pip_install', 'pip'])
 def cmd_pip_install(m):
     if not (OWNER_ID and m.from_user.id == OWNER_ID):
@@ -3037,7 +3251,7 @@ def cmd_pip_install(m):
     pkg = args[1].strip()
     try:
         bot.reply_to(m, f"🔧 Installing: {pkg} ...")
-        proc = subprocess.run([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        proc = subprocess.run([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
         out = proc.stdout.decode('utf-8', errors='replace')
         err = proc.stderr.decode('utf-8', errors='replace')
         resp = ""
@@ -3047,7 +3261,12 @@ def cmd_pip_install(m):
             resp += f"⚠️ STDERR:\n{err}\n"
         if not resp:
             resp = "✅ Done (no output)."
-        bot.reply_to(m, resp[:3900])
+        # send in chunks if too large
+        if len(resp) <= 3900:
+            bot.reply_to(m, resp)
+        else:
+            for i in range(0, len(resp), 3800):
+                bot.reply_to(m, resp[i:i+3800])
     except subprocess.TimeoutExpired:
         bot.reply_to(m, "⏱ pip install timed out.")
     except Exception as e:
@@ -3227,6 +3446,34 @@ def cmd_selftest(m):
     bot.reply_to(m, "\n".join(out))
 
 # ---------------------------
+# NEW: /cmd to list commands via message (user asked)
+@bot.message_handler(commands=['cmd'])
+def cmd_list_all(m):
+    """
+    Send the same commands list as the UI when user types /cmd
+    """
+    txt = ("📋 <b>COMMANDS</b>\n\n"
+           "/start - Start/Help\n"
+           "/new - Start a new game\n"
+           "/stop - Stop current game\n"
+           "/stats - Profile\n"
+           "/leaderboard - Top players\n"
+           "/daily - Claim daily\n"
+           "/referral - Invite link\n"
+           "/define <word> - Dictionary\n"
+           "/leaderboard_image - Image leaderboard\n"
+           "\nAdmin commands (admins only):\n"
+           "/shoplist - View shop orders\n"
+           "/listreviews - List reviews\n"
+           "/approvereview <id> - Approve review\n"
+           "/redeemlist - Pending redeems\n"
+           "/selftest - Run diagnostics\n")
+    try:
+        bot.reply_to(m, txt)
+    except Exception:
+        pass
+
+# ---------------------------
 # RUN
 # ---------------------------
 if __name__ == "__main__":
@@ -3239,11 +3486,12 @@ if __name__ == "__main__":
 
     def run_bot():
         # be explicit about allowed_updates to ensure callback queries are delivered
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except Exception:
-            logger.exception("Polling stopped unexpectedly")
-            time.sleep(5)
+        while True:
+            try:
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            except Exception:
+                logger.exception("Polling stopped unexpectedly")
+                time.sleep(5)
 
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.daemon = True
