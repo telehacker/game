@@ -1541,14 +1541,41 @@ def cmd_stats(m):
 
     premium_badge = " 👑 PREMIUM" if db.is_premium(m.from_user.id) else " 🔓 FREE"
 
-    # Normalize fields safely (support sqlite3.Row or tuple fallback)
-    name = html.escape(user['name'] if user and 'name' in user.keys() else (user[1] if user else 'Player'))
-    total_score = user['total_score'] if user and 'total_score' in user.keys() else (user[6] if user else 0)
-    hint_balance = user['hint_balance'] if user and 'hint_balance' in user.keys() else (user[7] if user else 0)
-    games_played = user['games_played'] if user and 'games_played' in user.keys() else (user[4] if user else 0)
-    wins = user['wins'] if user and 'wins' in user.keys() else (user[5] if user else 0)
-    words_found = user['words_found'] if user and 'words_found' in user.keys() else (user[18] if user else 0)
-    streak = user['streak'] if user and 'streak' in user.keys() else (user[11] if user else 0)
+    # Normalize fields safely (supports sqlite3.Row or tuple fallback)
+    try:
+        name = html.escape(user['name']) if user and 'name' in user.keys() else (html.escape(user[1]) if user and len(user) > 1 else 'Player')
+    except Exception:
+        name = 'Player'
+
+    try:
+        total_score = int(user['total_score']) if user and 'total_score' in user.keys() else (int(user[6]) if user and len(user) > 6 else 0)
+    except Exception:
+        total_score = 0
+
+    try:
+        hint_balance = int(user['hint_balance']) if user and 'hint_balance' in user.keys() else (int(user[7]) if user and len(user) > 7 else 0)
+    except Exception:
+        hint_balance = 0
+
+    try:
+        games_played = int(user['games_played']) if user and 'games_played' in user.keys() else (int(user[4]) if user and len(user) > 4 else 0)
+    except Exception:
+        games_played = 0
+
+    try:
+        wins = int(user['wins']) if user and 'wins' in user.keys() else (int(user[5]) if user and len(user) > 5 else 0)
+    except Exception:
+        wins = 0
+
+    try:
+        words_found = int(user['words_found']) if user and 'words_found' in user.keys() else (int(user[18]) if user and len(user) > 18 else 0)
+    except Exception:
+        words_found = 0
+
+    try:
+        streak = int(user['streak']) if user and 'streak' in user.keys() else (int(user[11]) if user and len(user) > 11 else 0)
+    except Exception:
+        streak = 0
 
     txt = (f"👤 <b>PROFILE</b>\n\n"
            f"Name: {name}{premium_badge}\n"
