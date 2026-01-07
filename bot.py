@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Optional, Any
 import subprocess
 import tempfile
+import fitz
 
 # optional resource limits for sandboxed runs (POSIX)
 try:
@@ -80,6 +81,7 @@ START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-
 PYQ_IMG_URL = os.environ.get("PYQ_IMG_URL", START_IMG_URL)
 PYQ_QUESTIONS_FILE = os.environ.get("PYQ_QUESTIONS_FILE", "pyq_questions.json")
 PYQ_FREE_LIMIT = int(os.environ.get("PYQ_FREE_LIMIT", "3"))
+PYQ_PDF_MAX_PAGES = int(os.environ.get("PYQ_PDF_MAX_PAGES", "50"))
 EXAMGOAL_API_BASE = os.environ.get("EXAMGOAL_API_BASE", "")
 EXAMGOAL_API_TOKEN = os.environ.get("EXAMGOAL_API_TOKEN", "")
 
@@ -213,6 +215,56 @@ load_words()
 # PYQ QUESTIONS
 # ---------------------------
 PYQ_QUESTIONS: Dict[str, List[Dict[str, Any]]] = {"physics": [], "chemistry": [], "math": []}
+
+def parse_pdf_question(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+    lines = [clean(x) for x in text.split("\n") if clean(x)]
+    answer_index = None
+    answer_match = None
+    for line in lines:
+        m = re.search(r"(answer|ans)\s*[:\-]?\s*([abcd])", line, flags=re.I)
+        if m:
+            answer_match = m.group(2).upper()
+            break
+    if answer_match:
+        answer_index = "ABCD".find(answer_match)
+
+    option_lines = []
+    for line in lines:
+        if re.match(r"^\(?[A-D]\)?[.)]\s+", line):
+            option_lines.append(line)
+    options = []
+    for line in option_lines:
+        cleaned = re.sub(r"^\(?[A-D]\)?[.)]\s*", "", line).strip()
+        if cleaned:
+            options.append(cleaned)
+    if len(options) != 4:
+        return None
+
+    question_parts = []
+    for line in lines:
+        if re.match(r"^\(?[A-D]\)?[.)]\s+", line):
+            break
+        if re.search(r"(answer|ans)\s*[:\-]?\s*[abcd]", line, flags=re.I):
+            continue
+        question_parts.append(line)
+    question = " ".join(question_parts).strip()
+    if not question:
+        return None
+    if answer_index is None or not (0 <= answer_index <= 3):
+        return None
+    return {
+        "question": question,
+        "options": options,
+        "answer_index": answer_index,
+    }
+
+def save_pyq_questions(data: Dict[str, List[Dict[str, Any]]]) -> None:
+    if not PYQ_QUESTIONS_FILE:
+        return
+    with open(PYQ_QUESTIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 def fetch_pyq_questions_from_api() -> Optional[Dict[str, Any]]:
     if not EXAMGOAL_API_BASE:
@@ -411,6 +463,19 @@ class Database:
             free_used INTEGER DEFAULT 0
         )""")
 
+        # PYQ history (attempted/skipped)
+        c.execute("""CREATE TABLE IF NOT EXISTS pyq_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            subject TEXT,
+            question TEXT,
+            picked_index INTEGER,
+            correct_index INTEGER,
+            status TEXT,
+            year TEXT,
+            created_at TEXT
+        )""")
+
         # Ensure games table has full_state column (additive)
         try:
             c.execute("ALTER TABLE games ADD COLUMN full_state TEXT")
@@ -524,6 +589,75 @@ class Database:
                 c.execute("UPDATE pyq_usage SET free_used = free_used + ? WHERE user_id=?", (amount, user_id))
         conn.commit()
         conn.close()
+
+    def log_pyq_history(
+        self,
+        user_id: int,
+        subject: str,
+        question: str,
+        picked_index: Optional[int],
+        correct_index: Optional[int],
+        status: str,
+        year: str = ""
+    ):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO pyq_history (
+                user_id, subject, question, picked_index, correct_index, status, year, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                subject,
+                question,
+                picked_index,
+                correct_index,
+                status,
+                year,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_pyq_history(self, user_id: int, limit: int = 10):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute(
+            """SELECT subject, question, picked_index, correct_index, status, year, created_at
+               FROM pyq_history
+               WHERE user_id=?
+               ORDER BY id DESC
+               LIMIT ?""",
+            (user_id, limit),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
+    def get_pyq_history_summary(self, user_id: int):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute(
+            """SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status='correct' THEN 1 ELSE 0 END) as correct,
+                SUM(CASE WHEN status='wrong' THEN 1 ELSE 0 END) as wrong,
+                SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped
+               FROM pyq_history
+               WHERE user_id=?""",
+            (user_id,),
+        )
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return {"total": 0, "correct": 0, "wrong": 0, "skipped": 0}
+        return {
+            "total": row["total"] or 0,
+            "correct": row["correct"] or 0,
+            "wrong": row["wrong"] or 0,
+            "skipped": row["skipped"] or 0,
+        }
 
     def add_hint_balance(self, user_id: int, amount: int):
         conn = self._conn()
@@ -1796,6 +1930,7 @@ def send_next_pyq_question(uid: int, cid: int):
         InlineKeyboardButton("C", callback_data="pyq_ans:2"),
         InlineKeyboardButton("D", callback_data="pyq_ans:3")
     )
+    kb.row(InlineKeyboardButton("⏭ Skip", callback_data="pyq_skip"))
 
     if q.get("image_url"):
         try:
@@ -2415,6 +2550,36 @@ def cmd_gamehistory(m):
         txt += f"Game #{gid} • {mode} • {size}x{size}\nStart: {start_time}\nEnd: {end_time or 'ongoing'}\nWinner: {winner_id or 'N/A'} • {winner_score or 0}\n\n"
     bot.reply_to(m, txt)
 
+@bot.message_handler(commands=['mistake'])
+def cmd_mistake(m):
+    rows = db.get_pyq_history(m.from_user.id, limit=10)
+    summary = db.get_pyq_history_summary(m.from_user.id)
+    if not rows:
+        bot.reply_to(m, "No PYQ history yet.")
+        return
+
+    lines = [
+        "🧾 <b>PYQ History (last 10)</b>",
+        f"Total: {summary['total']} | ✅ {summary['correct']} | ❌ {summary['wrong']} | ⏭ {summary['skipped']}\n",
+    ]
+    for row in rows:
+        subject = row["subject"].title()
+        question = html.escape(row["question"])
+        status = row["status"]
+        picked = row["picked_index"]
+        correct = row["correct_index"]
+        year = row["year"] or ""
+        picked_label = "-" if picked is None else ["A", "B", "C", "D"][picked]
+        correct_label = "-" if correct is None else ["A", "B", "C", "D"][correct]
+        status_icon = "✅" if status == "correct" else "❌" if status == "wrong" else "⏭"
+        lines.append(
+            f"{status_icon} <b>{subject}</b> {year}\n"
+            f"<i>{question}</i>\n"
+            f"Picked: {picked_label} | Correct: {correct_label}\n"
+        )
+
+    bot.reply_to(m, "\n".join(lines), parse_mode="HTML")
+
 # Error listing/inspection/issue creation commands (admin)
 @bot.message_handler(commands=['list_errors'])
 def cmd_list_errors(m):
@@ -2670,6 +2835,96 @@ def handle_patch_upload(m):
         tb = traceback.format_exc()
         try:
             db.log_error("patch_upload_error", str(e), tb, context=f"file:{doc.file_name if doc else 'unknown'}")
+        except Exception:
+            pass
+    finally:
+        if uid in user_states:
+            del user_states[uid]
+
+# ---------------------------
+# PYQ PDF UPLOAD (owner/admin)
+# ---------------------------
+@bot.message_handler(commands=['upload_pyq_pdf'])
+def cmd_upload_pyq_pdf(m):
+    if not is_owner_or_admin(m.from_user.id):
+        bot.reply_to(m, "Unauthorized")
+        return
+    args = m.text.split()
+    if len(args) < 2 or args[1].lower() not in ("physics", "chemistry", "math"):
+        bot.reply_to(m, "Usage: /upload_pyq_pdf <physics|chemistry|math>")
+        return
+    subject = args[1].lower()
+    bot.reply_to(
+        m,
+        f"✅ Send PDF as document now (<= 20 MB). Up to {PYQ_PDF_MAX_PAGES} pages will be processed."
+    )
+    user_states[m.from_user.id] = {'type': 'pyq_pdf_upload', 'subject': subject}
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_states and user_states[m.from_user.id].get('type') == 'pyq_pdf_upload',
+    content_types=['document']
+)
+def handle_pyq_pdf_upload(m):
+    uid = m.from_user.id
+    state = user_states.get(uid, {})
+    subject = state.get("subject")
+    doc = m.document
+    if not doc or not subject:
+        bot.reply_to(m, "Invalid upload state.")
+        if uid in user_states:
+            del user_states[uid]
+        return
+    if doc.file_size > 20000000:
+        bot.reply_to(m, "File too large. Max 20 MB.")
+        if uid in user_states:
+            del user_states[uid]
+        return
+    if not doc.file_name.lower().endswith(".pdf"):
+        bot.reply_to(m, "Please upload a PDF file.")
+        if uid in user_states:
+            del user_states[uid]
+        return
+    try:
+        bot.reply_to(m, f"📥 Received {doc.file_name}, processing...")
+        file_info = bot.get_file(doc.file_id)
+        raw = bot.download_file(file_info.file_path)
+        pdf = fitz.open(stream=raw, filetype="pdf")
+
+        load_pyq_questions()
+        data = PYQ_QUESTIONS.copy()
+        added = 0
+        total_pages = min(pdf.page_count, PYQ_PDF_MAX_PAGES)
+        for page_index in range(total_pages):
+            page = pdf.load_page(page_index)
+            text = page.get_text("text")
+            parsed = parse_pdf_question(text)
+            if not parsed:
+                continue
+            pix = page.get_pixmap(dpi=160)
+            image_bytes = pix.tobytes("png")
+            sent = bot.send_photo(m.chat.id, image_bytes, caption=f"Imported Q{added + 1}")
+            file_id = sent.photo[-1].file_id if sent.photo else ""
+            if not file_id:
+                continue
+            entry = {
+                "question": parsed["question"],
+                "options": parsed["options"],
+                "answer_index": parsed["answer_index"],
+                "year": "",
+                "source": "PDF",
+                "image_url": file_id,
+            }
+            data.setdefault(subject, []).append(entry)
+            added += 1
+
+        save_pyq_questions(data)
+        load_pyq_questions()
+        bot.reply_to(m, f"✅ Imported {added} questions from {doc.file_name}.")
+    except Exception as e:
+        bot.reply_to(m, f"❌ Failed to import PDF: {e}")
+        tb = traceback.format_exc()
+        try:
+            db.log_error("pyq_pdf_upload_error", str(e), tb, context=f"file:{doc.file_name if doc else 'unknown'}")
         except Exception:
             pass
     finally:
@@ -3116,11 +3371,17 @@ def callback(c):
         try:
             for r in reviews[:10]:
                 txt = f"⭐ {r['rating']} • {r['username']}\n{(r['text'] or '')[:600]}\n"
-                bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Sent reviews to you!")
+                bot.send_message(cid, txt)
+            bot.answer_callback_query(c.id, "Sent reviews here!")
         except Exception:
-            logger.exception("Error sending reviews")
-            bot.answer_callback_query(c.id, "Error sending reviews", show_alert=True)
+            try:
+                for r in reviews[:10]:
+                    txt = f"⭐ {r['rating']} • {r['username']}\n{(r['text'] or '')[:600]}\n"
+                    bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Sent reviews to you!")
+            except Exception:
+                logger.exception("Error sending reviews")
+                bot.answer_callback_query(c.id, "Error sending reviews", show_alert=True)
         return
 
     if data == "referral":
@@ -3150,6 +3411,8 @@ def callback(c):
                "/referral - Invite link\n\n"
                "<b>📖 Dictionary:</b>\n"
                "/define <word> - Word definition\n\n"
+               "/mistake - PYQ history\n"
+               "/upload_pyq_pdf <subject> - Import PYQ PDF (admin)\n\n"
                "<b>👨‍💼 Admin:</b>\n"
                "/givepremium <id> <days> - Give premium\n"
                "/checkpremium <id> - Check premium\n"
@@ -3168,7 +3431,11 @@ def callback(c):
                 bot.send_message(uid, txt)
                 bot.answer_callback_query(c.id, "Commands sent to PM!")
             except Exception:
-                bot.answer_callback_query(c.id, "Unable to send commands.", show_alert=True)
+                try:
+                    bot.edit_message_text(txt, cid, c.message.message_id, parse_mode="HTML")
+                    bot.answer_callback_query(c.id, "Commands sent!")
+                except Exception:
+                    bot.answer_callback_query(c.id, "Unable to send commands.", show_alert=True)
         return
 
     if data == "jee_pyq":
@@ -3221,6 +3488,34 @@ def callback(c):
                 bot.answer_callback_query(c.id, "Unable to open premium PYQ.", show_alert=True)
         return
 
+    if data == "pyq_skip":
+        state = user_states.get(uid)
+        if not state or state.get("type") != "pyq_quiz":
+            bot.answer_callback_query(c.id, "No active PYQ question.", show_alert=True)
+            return
+
+        idx = state.get("index", 0)
+        questions = state.get("questions", [])
+        if idx >= len(questions):
+            bot.answer_callback_query(c.id, "Quiz already completed.", show_alert=True)
+            return
+
+        q = questions[idx]
+        db.log_pyq_history(
+            uid,
+            state.get("subject", ""),
+            q.get("question", ""),
+            None,
+            q.get("answer_index", None),
+            "skipped",
+            q.get("year", ""),
+        )
+        questions.pop(idx)
+        state["index"] = min(idx, len(questions))
+        bot.answer_callback_query(c.id, "Skipped.")
+        send_next_pyq_question(uid, cid)
+        return
+
     if data.startswith("pyq_ans:"):
         state = user_states.get(uid)
         if not state or state.get("type") != "pyq_quiz":
@@ -3243,12 +3538,30 @@ def callback(c):
         is_correct = choice == correct_idx
         points = 4 if is_correct else -1
         db.add_score_only_clamped(uid, points)
+        db.log_pyq_history(
+            uid,
+            state.get("subject", ""),
+            q.get("question", ""),
+            choice,
+            correct_idx,
+            "correct" if is_correct else "wrong",
+            q.get("year", ""),
+        )
         state["score"] = state.get("score", 0) + points
-        state["index"] = idx + 1
+        questions.pop(idx)
+        state["index"] = min(idx, len(questions))
 
         correct_label = ["A", "B", "C", "D"][correct_idx]
         result_msg = "✅ Correct! +4" if is_correct else f"❌ Wrong! -1 | Correct: {correct_label}"
         bot.send_message(cid, result_msg)
+        explanation = q.get("explanation")
+        if explanation:
+            expl_source = q.get("explanation_source") or "PYQ"
+            bot.send_message(
+                cid,
+                f"📘 <b>Explanation</b> ({html.escape(expl_source)}):\n{html.escape(explanation)}",
+                parse_mode="HTML",
+            )
         bot.answer_callback_query(c.id)
         send_next_pyq_question(uid, cid)
         return
