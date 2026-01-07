@@ -1500,7 +1500,8 @@ def main_menu():
         InlineKeyboardButton("👥 Invite", callback_data="referral")
     )
     kb.row(
-        InlineKeyboardButton("📋 Commands", callback_data="commands")
+        InlineKeyboardButton("📋 Commands", callback_data="commands"),
+        InlineKeyboardButton("📚 JEE Mains PYQ", callback_data="jee_pyq")
     )
     kb.row(InlineKeyboardButton("👨‍💻 Support", url=SUPPORT_GROUP))
 
@@ -2874,11 +2875,33 @@ def callback(c):
                "/listreviews\n"
                "/redeemlist")
         try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Commands sent to PM!")
-        except Exception:
             bot.send_message(cid, txt)
             bot.answer_callback_query(c.id, "Commands sent!")
+        except Exception:
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Commands sent to PM!")
+            except Exception:
+                bot.answer_callback_query(c.id, "Unable to send commands.", show_alert=True)
+        return
+
+    if data == "jee_pyq":
+        txt = ("📚 <b>JEE Mains PYQ Resources</b>\n\n"
+               "Choose a source to practice previous year questions:\n"
+               "• ExamSide: https://www.examside.com/jeemain\n"
+               "• ExamGoal: https://www.examgoal.com/\n"
+               "• Marks App: https://play.google.com/store/apps/details?id=com.marksapp\n"
+               "• NTA Abhyas: https://play.google.com/store/apps/details?id=com.mhrd.nta\n")
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("ExamSide", url="https://www.examside.com/jeemain"))
+        kb.add(InlineKeyboardButton("ExamGoal", url="https://www.examgoal.com/"))
+        kb.add(InlineKeyboardButton("Marks App", url="https://play.google.com/store/apps/details?id=com.marksapp"))
+        kb.add(InlineKeyboardButton("NTA Abhyas", url="https://play.google.com/store/apps/details?id=com.mhrd.nta"))
+        try:
+            bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+            bot.answer_callback_query(c.id)
+        except Exception:
+            bot.answer_callback_query(c.id, "Unable to open PYQ links.", show_alert=True)
         return
 
     # Game mode selection
