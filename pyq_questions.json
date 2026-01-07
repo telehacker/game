@@ -1,0 +1,81 @@
+{
+  "_note": "Sample verified question bank. Replace/extend with full PYQ sets as needed.",
+  "physics": [
+    {
+      "question": "The dimensional formula of force is:",
+      "options": ["M L T^-2", "M L^2 T^-2", "M L^-1 T^-2", "M^2 L T^-2"],
+      "answer_index": 0,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    },
+    {
+      "question": "A body moving with uniform velocity has acceleration equal to:",
+      "options": ["Zero", "Constant", "Increasing", "Decreasing"],
+      "answer_index": 0,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    },
+    {
+      "question": "For a projectile, the horizontal range is maximum when the angle of projection is:",
+      "options": ["30°", "45°", "60°", "90°"],
+      "answer_index": 1,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    }
+  ],
+  "chemistry": [
+    {
+      "question": "The atomic number of oxygen is:",
+      "options": ["6", "7", "8", "16"],
+      "answer_index": 2,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    },
+    {
+      "question": "The pH of a 0.001 M HCl solution at 25°C is:",
+      "options": ["1", "2", "3", "4"],
+      "answer_index": 2,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    },
+    {
+      "question": "At STP, 22.4 L of an ideal gas contains how many moles?",
+      "options": ["0.5", "1", "2", "4"],
+      "answer_index": 1,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    }
+  ],
+  "math": [
+    {
+      "question": "The derivative of sin(x) with respect to x is:",
+      "options": ["cos(x)", "-cos(x)", "sin(x)", "-sin(x)"],
+      "answer_index": 0,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    },
+    {
+      "question": "∫(1/x) dx equals:",
+      "options": ["ln|x| + C", "e^x + C", "x^2/2 + C", "1/x + C"],
+      "answer_index": 0,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    },
+    {
+      "question": "If α and β are the roots of ax^2 + bx + c = 0, then α + β equals:",
+      "options": ["b/a", "-b/a", "c/a", "-c/a"],
+      "answer_index": 1,
+      "year": "",
+      "source": "PYQ Sample",
+      "image_url": ""
+    }
+  ]
+}
