@@ -89,6 +89,15 @@ REPO_OWNER = os.environ.get("REPO_OWNER") or os.environ.get("GITHUB_REPO_OWNER")
 REPO_NAME = os.environ.get("REPO_NAME") or os.environ.get("GITHUB_REPO_NAME") or "game"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
+DATA_DIR = os.environ.get("DATA_DIR", "data")
+DB_PATH = os.environ.get("DB_PATH")
+if not DB_PATH:
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        DB_PATH = os.path.join(DATA_DIR, "word_vortex_v105_final.db")
+    except Exception:
+        DB_PATH = "word_vortex_v105_final.db"
+
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -282,7 +291,7 @@ load_pyq_questions()
 class Database:
     def __init__(self):
         # Use DB_PATH if provided to allow custom DB location
-        self.db = os.environ.get("DB_PATH", "word_vortex_v105_final.db")
+        self.db = DB_PATH or "word_vortex_v105_final.db"
         self._init()
 
     def _conn(self):
