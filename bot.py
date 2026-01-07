@@ -768,7 +768,12 @@ class Database:
         conn = self._conn()
         c = conn.cursor()
         if approved_only:
-            c.execute("SELECT * FROM reviews WHERE approved=1 ORDER BY created_at DESC LIMIT 10")
+            c.execute(
+                """SELECT * FROM reviews
+                   WHERE approved=1 OR approved='1' OR approved='true' OR approved='TRUE'
+                   ORDER BY created_at DESC
+                   LIMIT 10"""
+            )
         else:
             c.execute("SELECT * FROM reviews ORDER BY created_at DESC")
         rows = c.fetchall()
@@ -2861,6 +2866,19 @@ def cmd_upload_pyq_pdf(m):
     user_states[m.from_user.id] = {'type': 'pyq_pdf_upload', 'subject': subject}
 
 @bot.message_handler(
+    func=lambda m: m.content_type == 'document' and m.document and m.document.file_name and m.document.file_name.lower().endswith(".pdf"),
+    content_types=['document']
+)
+def handle_pyq_pdf_upload_missing_state(m):
+    uid = m.from_user.id
+    if uid in user_states and user_states[uid].get('type') == 'pyq_pdf_upload':
+        return
+    if not is_owner_or_admin(uid):
+        bot.reply_to(m, "Unauthorized")
+        return
+    bot.reply_to(m, "Please run /upload_pyq_pdf <physics|chemistry|math> before uploading the PDF.")
+
+@bot.message_handler(
     func=lambda m: m.from_user.id in user_states and user_states[m.from_user.id].get('type') == 'pyq_pdf_upload',
     content_types=['document']
 )
@@ -2919,7 +2937,10 @@ def handle_pyq_pdf_upload(m):
 
         save_pyq_questions(data)
         load_pyq_questions()
-        bot.reply_to(m, f"✅ Imported {added} questions from {doc.file_name}.")
+        if added == 0:
+            bot.reply_to(m, f"⚠️ No questions parsed from {doc.file_name}. Check PDF format.")
+        else:
+            bot.reply_to(m, f"✅ Imported {added} questions from {doc.file_name}.")
     except Exception as e:
         bot.reply_to(m, f"❌ Failed to import PDF: {e}")
         tb = traceback.format_exc()
@@ -3366,7 +3387,16 @@ def callback(c):
     if data == "view_reviews":
         reviews = db.get_reviews(approved_only=True)
         if not reviews:
-            bot.answer_callback_query(c.id, "No reviews yet!", show_alert=True)
+            all_reviews = db.get_reviews(approved_only=False)
+            if all_reviews:
+                pending = len([r for r in all_reviews if not r["approved"]])
+                bot.answer_callback_query(
+                    c.id,
+                    f"No approved reviews yet. Pending: {pending}.",
+                    show_alert=True,
+                )
+            else:
+                bot.answer_callback_query(c.id, "No reviews yet!", show_alert=True)
             return
         try:
             for r in reviews[:10]:
