@@ -2903,7 +2903,11 @@ def callback(c):
             bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=kb)
             bot.answer_callback_query(c.id)
         except Exception:
-            bot.answer_callback_query(c.id, "Unable to open PYQ menu.", show_alert=True)
+            try:
+                bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+                bot.answer_callback_query(c.id, "Opened without image.")
+            except Exception:
+                bot.answer_callback_query(c.id, "Unable to open PYQ menu.", show_alert=True)
         return
 
     if data in ("pyq_physics", "pyq_chemistry", "pyq_math"):
@@ -2928,7 +2932,11 @@ def callback(c):
             bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
             bot.answer_callback_query(c.id)
         except Exception:
-            bot.answer_callback_query(c.id, "Unable to open PYQ links.", show_alert=True)
+            try:
+                bot.send_message(uid, txt, reply_markup=kb, disable_web_page_preview=True)
+                bot.answer_callback_query(c.id, "Sent to your PM.")
+            except Exception:
+                bot.answer_callback_query(c.id, "Unable to open PYQ links.", show_alert=True)
         return
 
     if data == "premium_pyq":
@@ -2951,7 +2959,11 @@ def callback(c):
             bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=kb)
             bot.answer_callback_query(c.id)
         except Exception:
-            bot.answer_callback_query(c.id, "Unable to open premium PYQ.", show_alert=True)
+            try:
+                bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+                bot.answer_callback_query(c.id, "Opened without image.")
+            except Exception:
+                bot.answer_callback_query(c.id, "Unable to open premium PYQ.", show_alert=True)
         return
 
     # Game mode selection
