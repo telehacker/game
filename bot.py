@@ -77,6 +77,8 @@ FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
 PYQ_IMG_URL = os.environ.get("PYQ_IMG_URL", START_IMG_URL)
+PYQ_QUESTIONS_FILE = os.environ.get("PYQ_QUESTIONS_FILE", "pyq_questions.json")
+PYQ_FREE_LIMIT = int(os.environ.get("PYQ_FREE_LIMIT", "3"))
 
 # GitHub / OpenAI config (optional)
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT")
@@ -194,6 +196,62 @@ def load_words():
     logger.info("⚠️ Using fallback wordlist")
 
 load_words()
+
+# ---------------------------
+# PYQ QUESTIONS
+# ---------------------------
+PYQ_QUESTIONS: Dict[str, List[Dict[str, Any]]] = {"physics": [], "chemistry": [], "math": []}
+
+def load_pyq_questions():
+    global PYQ_QUESTIONS
+    data = None
+    # prefer local JSON file
+    if PYQ_QUESTIONS_FILE and os.path.exists(PYQ_QUESTIONS_FILE):
+        try:
+            with open(PYQ_QUESTIONS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.exception("Failed to load PYQ questions file: %s", e)
+    # fallback to feature pack
+    if data is None and isinstance(feature_pack, dict):
+        data = feature_pack.get("pyq_questions")
+
+    if not isinstance(data, dict):
+        return
+
+    normalized: Dict[str, List[Dict[str, Any]]] = {"physics": [], "chemistry": [], "math": []}
+    for key in ("physics", "chemistry", "math"):
+        items = data.get(key, [])
+        if not isinstance(items, list):
+            continue
+        for q in items:
+            if not isinstance(q, dict):
+                continue
+            question = str(q.get("question", "")).strip()
+            options = q.get("options", [])
+            answer_index = q.get("answer_index", None)
+            if not question or not isinstance(options, list) or len(options) != 4:
+                continue
+            if not isinstance(answer_index, int) or not (0 <= answer_index <= 3):
+                continue
+            cleaned = {
+                "question": question,
+                "options": [str(o).strip() for o in options],
+                "answer_index": answer_index,
+                "year": str(q.get("year", "")).strip(),
+                "source": str(q.get("source", "")).strip(),
+                "image_url": str(q.get("image_url", "")).strip(),
+            }
+            normalized[key].append(cleaned)
+
+    PYQ_QUESTIONS = normalized
+
+def get_pyq_questions(subject: str) -> List[Dict[str, Any]]:
+    if subject not in PYQ_QUESTIONS:
+        return []
+    return PYQ_QUESTIONS.get(subject, [])
+
+load_pyq_questions()
 
 # ---------------------------
 # DATABASE
@@ -314,6 +372,13 @@ class Database:
             created_issue_url TEXT
         )""")
 
+        # PYQ usage tracking for free users (daily limit)
+        c.execute("""CREATE TABLE IF NOT EXISTS pyq_usage (
+            user_id INTEGER PRIMARY KEY,
+            date TEXT,
+            free_used INTEGER DEFAULT 0
+        )""")
+
         # Ensure games table has full_state column (additive)
         try:
             c.execute("ALTER TABLE games ADD COLUMN full_state TEXT")
@@ -379,6 +444,52 @@ class Database:
         conn = self._conn()
         c = conn.cursor()
         c.execute("UPDATE users SET total_score = total_score + ? WHERE user_id=?", (points, user_id))
+        conn.commit()
+        conn.close()
+
+    def add_score_only_clamped(self, user_id: int, points: int):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("SELECT total_score FROM users WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        current = row[0] if row else 0
+        new_total = max(0, current + points)
+        c.execute("UPDATE users SET total_score = ? WHERE user_id=?", (new_total, user_id))
+        conn.commit()
+        conn.close()
+
+    def get_pyq_free_used(self, user_id: int) -> int:
+        today = datetime.now().strftime("%Y-%m-%d")
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("SELECT date, free_used FROM pyq_usage WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        if not row:
+            c.execute("INSERT INTO pyq_usage (user_id, date, free_used) VALUES (?, ?, ?)", (user_id, today, 0))
+            conn.commit()
+            conn.close()
+            return 0
+        if row["date"] != today:
+            c.execute("UPDATE pyq_usage SET date=?, free_used=0 WHERE user_id=?", (today, user_id))
+            conn.commit()
+            conn.close()
+            return 0
+        conn.close()
+        return int(row["free_used"])
+
+    def increment_pyq_free_used(self, user_id: int, amount: int = 1):
+        today = datetime.now().strftime("%Y-%m-%d")
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("SELECT date, free_used FROM pyq_usage WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        if not row:
+            c.execute("INSERT INTO pyq_usage (user_id, date, free_used) VALUES (?, ?, ?)", (user_id, today, amount))
+        else:
+            if row["date"] != today:
+                c.execute("UPDATE pyq_usage SET date=?, free_used=? WHERE user_id=?", (today, amount, user_id))
+            else:
+                c.execute("UPDATE pyq_usage SET free_used = free_used + ? WHERE user_id=?", (amount, user_id))
         conn.commit()
         conn.close()
 
@@ -1529,6 +1640,94 @@ def game_modes_menu():
     kb.row(InlineKeyboardButton("« Back", callback_data="back_main"))
     return kb
 
+def pyq_subject_menu():
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("⚛️ Physics", callback_data="pyq_physics"),
+        InlineKeyboardButton("🧪 Chemistry", callback_data="pyq_chemistry")
+    )
+    kb.row(InlineKeyboardButton("📐 Math", callback_data="pyq_math"))
+    return kb
+
+def prompt_premium_upgrade(cid: int, message: str):
+    kb = InlineKeyboardMarkup()
+    kb.row(InlineKeyboardButton("🛒 Buy Premium", callback_data="shop"))
+    kb.row(InlineKeyboardButton("« Back", callback_data="back_main"))
+    bot.send_message(cid, message, reply_markup=kb)
+
+def start_pyq_quiz(uid: int, cid: int, subject: str):
+    load_pyq_questions()
+    questions = get_pyq_questions(subject)
+    if not questions:
+        bot.send_message(cid, "⚠️ PYQ questions not configured yet. Admin se verified PYQ JSON upload karwaye.")
+        return
+
+    is_premium = db.is_premium(uid)
+    if not is_premium:
+        used = db.get_pyq_free_used(uid)
+        remaining = max(0, PYQ_FREE_LIMIT - used)
+        if remaining <= 0:
+            prompt_premium_upgrade(
+                cid,
+                "⭐ Free limit khatam ho gaya.\nPremium le kar unlimited PYQ access unlock karein."
+            )
+            return
+        questions = random.sample(questions, min(remaining, len(questions)))
+    else:
+        questions = random.sample(questions, min(len(questions), 20))
+
+    user_states[uid] = {
+        "type": "pyq_quiz",
+        "subject": subject,
+        "index": 0,
+        "score": 0,
+        "questions": questions,
+        "is_premium": is_premium,
+    }
+    send_next_pyq_question(uid, cid)
+
+def send_next_pyq_question(uid: int, cid: int):
+    state = user_states.get(uid)
+    if not state or state.get("type") != "pyq_quiz":
+        return
+    idx = state.get("index", 0)
+    questions = state.get("questions", [])
+    if idx >= len(questions):
+        total = len(questions)
+        score = state.get("score", 0)
+        msg = f"✅ PYQ quiz completed!\nScore: {score} pts\nQuestions: {total}"
+        bot.send_message(cid, msg)
+        user_states.pop(uid, None)
+        return
+
+    q = questions[idx]
+    if not state.get("is_premium"):
+        db.increment_pyq_free_used(uid, 1)
+
+    opts = q["options"]
+    option_labels = ["A", "B", "C", "D"]
+    options_text = "\n".join([f"{option_labels[i]}. {opts[i]}" for i in range(4)])
+    source_line = ""
+    if q.get("year") or q.get("source"):
+        source_line = f"\n\n<b>Source:</b> {html.escape(q.get('source', ''))} {html.escape(q.get('year', ''))}"
+    txt = (f"📚 <b>JEE Mains PYQ ({state.get('subject', '').title()})</b>\n"
+           f"Q{idx + 1}/{len(questions)}\n\n"
+           f"{html.escape(q['question'])}\n\n{html.escape(options_text)}{source_line}")
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("A", callback_data="pyq_ans:0"),
+        InlineKeyboardButton("B", callback_data="pyq_ans:1")
+    )
+    kb.row(
+        InlineKeyboardButton("C", callback_data="pyq_ans:2"),
+        InlineKeyboardButton("D", callback_data="pyq_ans:3")
+    )
+
+    if q.get("image_url"):
+        bot.send_photo(cid, q["image_url"], caption=txt, reply_markup=kb)
+    else:
+        bot.send_message(cid, txt, reply_markup=kb)
+
 def shop_menu():
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("🚀 XP Booster 2x (30d) - ₹199", callback_data="shop_xp_booster"))
@@ -2338,6 +2537,7 @@ def handle_feature_pack_upload(m):
         db.save_feature_pack(doc.file_name, content)
         global feature_pack
         feature_pack = parsed
+        load_pyq_questions()
         bot.reply_to(m, "✅ Feature pack uploaded and applied (non-code features).")
     except Exception as e:
         bot.reply_to(m, f"❌ Failed to load: {e}")
@@ -2891,20 +3091,14 @@ def callback(c):
 
     if data == "jee_pyq":
         txt = ("📚 <b>JEE Mains PYQ (PCM)</b>\n\n"
-               "Subject choose karein. Niche buttons se Physics/Chemistry/Math ke options aayenge.\n"
-               "Saare sources trusted aur official apps/pages par based hain.")
-        kb = InlineKeyboardMarkup()
-        kb.row(
-            InlineKeyboardButton("⚛️ Physics", callback_data="pyq_physics"),
-            InlineKeyboardButton("🧪 Chemistry", callback_data="pyq_chemistry")
-        )
-        kb.row(InlineKeyboardButton("📐 Math", callback_data="pyq_math"))
+               f"Free users ko daily {PYQ_FREE_LIMIT} questions milenge. Premium users ko unlimited access.\n"
+               "Subject choose karein:")
         try:
-            bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=kb)
+            bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=pyq_subject_menu())
             bot.answer_callback_query(c.id)
         except Exception:
             try:
-                bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+                bot.send_message(cid, txt, reply_markup=pyq_subject_menu(), disable_web_page_preview=True)
                 bot.answer_callback_query(c.id, "Opened without image.")
             except Exception:
                 bot.answer_callback_query(c.id, "Unable to open PYQ menu.", show_alert=True)
@@ -2916,54 +3110,65 @@ def callback(c):
             "pyq_chemistry": "Chemistry",
             "pyq_math": "Math"
         }
-        subject = subject_map.get(data, "Subject")
-        txt = (f"📚 <b>JEE Mains PYQ - {subject}</b>\n\n"
-               "Recommended sources (all years PYQ coverage):\n"
-               "• ExamSide: https://www.examside.com/jeemain\n"
-               "• ExamGoal: https://www.examgoal.com/\n"
-               "• Marks App: https://play.google.com/store/apps/details?id=com.marksapp\n"
-               "• NTA Abhyas: https://play.google.com/store/apps/details?id=com.mhrd.nta\n")
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("ExamSide", url="https://www.examside.com/jeemain"))
-        kb.add(InlineKeyboardButton("ExamGoal", url="https://www.examgoal.com/"))
-        kb.add(InlineKeyboardButton("Marks App", url="https://play.google.com/store/apps/details?id=com.marksapp"))
-        kb.add(InlineKeyboardButton("NTA Abhyas", url="https://play.google.com/store/apps/details?id=com.mhrd.nta"))
+        subject = subject_map.get(data, "Physics")
         try:
-            bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+            start_pyq_quiz(uid, cid, subject.lower())
             bot.answer_callback_query(c.id)
         except Exception:
-            try:
-                bot.send_message(uid, txt, reply_markup=kb, disable_web_page_preview=True)
-                bot.answer_callback_query(c.id, "Sent to your PM.")
-            except Exception:
-                bot.answer_callback_query(c.id, "Unable to open PYQ links.", show_alert=True)
+            bot.answer_callback_query(c.id, "Unable to start PYQ quiz.", show_alert=True)
         return
 
     if data == "premium_pyq":
         if not db.is_premium(uid):
             bot.answer_callback_query(c.id, "Premium users only. Premium le kar access milega.", show_alert=True)
+            prompt_premium_upgrade(
+                cid,
+                "⭐ Premium users ke liye PYQ quiz unlocked. Buy premium to continue."
+            )
             return
         txt = ("⭐ <b>Premium PYQ (PCM)</b>\n\n"
-               "Unlocked premium access. Physics, Chemistry, Math ke liye curated sources:\n"
-               "• ExamSide (All years)\n"
-               "• ExamGoal (Topic-wise)\n"
-               "• Marks App (Practice sets)\n"
-               "• NTA Abhyas (Official app)\n")
-        kb = InlineKeyboardMarkup()
-        kb.row(
-            InlineKeyboardButton("⚛️ Physics", callback_data="pyq_physics"),
-            InlineKeyboardButton("🧪 Chemistry", callback_data="pyq_chemistry")
-        )
-        kb.row(InlineKeyboardButton("📐 Math", callback_data="pyq_math"))
+               "Unlimited PYQ access unlocked. Subject choose karein:")
         try:
-            bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=kb)
+            bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=pyq_subject_menu())
             bot.answer_callback_query(c.id)
         except Exception:
             try:
-                bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+                bot.send_message(cid, txt, reply_markup=pyq_subject_menu(), disable_web_page_preview=True)
                 bot.answer_callback_query(c.id, "Opened without image.")
             except Exception:
                 bot.answer_callback_query(c.id, "Unable to open premium PYQ.", show_alert=True)
+        return
+
+    if data.startswith("pyq_ans:"):
+        state = user_states.get(uid)
+        if not state or state.get("type") != "pyq_quiz":
+            bot.answer_callback_query(c.id, "No active PYQ question.", show_alert=True)
+            return
+        try:
+            choice = int(data.split(":")[1])
+        except Exception:
+            bot.answer_callback_query(c.id, "Invalid option.", show_alert=True)
+            return
+
+        idx = state.get("index", 0)
+        questions = state.get("questions", [])
+        if idx >= len(questions):
+            bot.answer_callback_query(c.id, "Quiz already completed.", show_alert=True)
+            return
+
+        q = questions[idx]
+        correct_idx = q.get("answer_index", 0)
+        is_correct = choice == correct_idx
+        points = 4 if is_correct else -1
+        db.add_score_only_clamped(uid, points)
+        state["score"] = state.get("score", 0) + points
+        state["index"] = idx + 1
+
+        correct_label = ["A", "B", "C", "D"][correct_idx]
+        result_msg = "✅ Correct! +4" if is_correct else f"❌ Wrong! -1 | Correct: {correct_label}"
+        bot.send_message(cid, result_msg)
+        bot.answer_callback_query(c.id)
+        send_next_pyq_question(uid, cid)
         return
 
     # Game mode selection
