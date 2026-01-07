@@ -19,6 +19,7 @@ import time
 import html
 import io
 import random
+import textwrap
 import logging
 import sqlite3
 import json
@@ -79,6 +80,8 @@ START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-
 PYQ_IMG_URL = os.environ.get("PYQ_IMG_URL", START_IMG_URL)
 PYQ_QUESTIONS_FILE = os.environ.get("PYQ_QUESTIONS_FILE", "pyq_questions.json")
 PYQ_FREE_LIMIT = int(os.environ.get("PYQ_FREE_LIMIT", "3"))
+EXAMGOAL_API_BASE = os.environ.get("EXAMGOAL_API_BASE", "")
+EXAMGOAL_API_TOKEN = os.environ.get("EXAMGOAL_API_TOKEN", "")
 
 # GitHub / OpenAI config (optional)
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT")
@@ -202,11 +205,31 @@ load_words()
 # ---------------------------
 PYQ_QUESTIONS: Dict[str, List[Dict[str, Any]]] = {"physics": [], "chemistry": [], "math": []}
 
+def fetch_pyq_questions_from_api() -> Optional[Dict[str, Any]]:
+    if not EXAMGOAL_API_BASE:
+        return None
+    url = EXAMGOAL_API_BASE.rstrip("/") + "/pyq"
+    headers = {}
+    if EXAMGOAL_API_TOKEN:
+        headers["Authorization"] = f"Bearer {EXAMGOAL_API_TOKEN}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        logger.exception("Failed to fetch PYQ questions from API: %s", e)
+    return None
+
 def load_pyq_questions():
     global PYQ_QUESTIONS
     data = None
+    api_data = fetch_pyq_questions_from_api()
+    if isinstance(api_data, dict):
+        data = api_data
     # prefer local JSON file
-    if PYQ_QUESTIONS_FILE and os.path.exists(PYQ_QUESTIONS_FILE):
+    if data is None and PYQ_QUESTIONS_FILE and os.path.exists(PYQ_QUESTIONS_FILE):
         try:
             with open(PYQ_QUESTIONS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1649,6 +1672,48 @@ def pyq_subject_menu():
     kb.row(InlineKeyboardButton("📐 Math", callback_data="pyq_math"))
     return kb
 
+def render_pyq_question_image(question: str) -> io.BytesIO:
+    width = 900
+    padding = 40
+    header_height = 90
+    bg = "#0b0f1a"
+    header_bg = "#122033"
+    text_color = "#ffffff"
+    accent = "#4dd0e1"
+
+    try:
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if not os.path.exists(font_path):
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        if not os.path.exists(font_path):
+            raise Exception("Font not found")
+        title_font = ImageFont.truetype(font_path, 26)
+        body_font = ImageFont.truetype(font_path, 22)
+    except Exception:
+        title_font = ImageFont.load_default()
+        body_font = ImageFont.load_default()
+
+    wrapped = textwrap.wrap(question.strip(), width=48) if question else ["(No question)"]
+    line_height = 30
+    body_height = max(120, line_height * len(wrapped) + padding)
+    height = header_height + body_height + padding
+
+    img = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, width, header_height], fill=header_bg)
+    draw.text((padding, 26), "JEE Mains PYQ", fill=accent, font=title_font)
+
+    y = header_height + 20
+    for line in wrapped:
+        draw.text((padding, y), line, fill=text_color, font=body_font)
+        y += line_height
+
+    bio = io.BytesIO()
+    img.save(bio, "PNG", quality=95)
+    bio.seek(0)
+    bio.name = "pyq_question.png"
+    return bio
+
 def prompt_premium_upgrade(cid: int, message: str):
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("🛒 Buy Premium", callback_data="shop"))
@@ -1724,8 +1789,16 @@ def send_next_pyq_question(uid: int, cid: int):
     )
 
     if q.get("image_url"):
-        bot.send_photo(cid, q["image_url"], caption=txt, reply_markup=kb)
-    else:
+        try:
+            bot.send_photo(cid, q["image_url"], caption=txt, reply_markup=kb)
+            return
+        except Exception:
+            pass
+
+    try:
+        question_image = render_pyq_question_image(q.get("question", ""))
+        bot.send_photo(cid, question_image, caption=txt, reply_markup=kb)
+    except Exception:
         bot.send_message(cid, txt, reply_markup=kb)
 
 def shop_menu():
@@ -3169,22 +3242,6 @@ def callback(c):
         bot.send_message(cid, result_msg)
         bot.answer_callback_query(c.id)
         send_next_pyq_question(uid, cid)
-        txt = ("📚 <b>JEE Mains PYQ Resources</b>\n\n"
-               "Choose a source to practice previous year questions:\n"
-               "• ExamSide: https://www.examside.com/jeemain\n"
-               "• ExamGoal: https://www.examgoal.com/\n"
-               "• Marks App: https://play.google.com/store/apps/details?id=com.marksapp\n"
-               "• NTA Abhyas: https://play.google.com/store/apps/details?id=com.mhrd.nta\n")
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("ExamSide", url="https://www.examside.com/jeemain"))
-        kb.add(InlineKeyboardButton("ExamGoal", url="https://www.examgoal.com/"))
-        kb.add(InlineKeyboardButton("Marks App", url="https://play.google.com/store/apps/details?id=com.marksapp"))
-        kb.add(InlineKeyboardButton("NTA Abhyas", url="https://play.google.com/store/apps/details?id=com.mhrd.nta"))
-        try:
-            bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
-            bot.answer_callback_query(c.id)
-        except Exception:
-            bot.answer_callback_query(c.id, "Unable to open PYQ links.", show_alert=True)
         return
 
     # Game mode selection
