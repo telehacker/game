@@ -76,6 +76,7 @@ CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@Ruhvaan_Updates")
 FORCE_JOIN = True
 SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP_LINK", "https://t.me/Ruhvaan")
 START_IMG_URL = "https://image2url.com/r2/default/images/1767379923930-426fd806-ba8a-41fd-b181-56fa31150621.jpg"
+PYQ_IMG_URL = os.environ.get("PYQ_IMG_URL", START_IMG_URL)
 
 # GitHub / OpenAI config (optional)
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT")
@@ -1500,7 +1501,11 @@ def main_menu():
         InlineKeyboardButton("👥 Invite", callback_data="referral")
     )
     kb.row(
-        InlineKeyboardButton("📋 Commands", callback_data="commands")
+        InlineKeyboardButton("📋 Commands", callback_data="commands"),
+        InlineKeyboardButton("📚 JEE Mains PYQ", callback_data="jee_pyq")
+    )
+    kb.row(
+        InlineKeyboardButton("⭐ Premium PYQ", callback_data="premium_pyq")
     )
     kb.row(InlineKeyboardButton("👨‍💻 Support", url=SUPPORT_GROUP))
 
@@ -2874,11 +2879,79 @@ def callback(c):
                "/listreviews\n"
                "/redeemlist")
         try:
-            bot.send_message(uid, txt)
-            bot.answer_callback_query(c.id, "Commands sent to PM!")
-        except Exception:
             bot.send_message(cid, txt)
             bot.answer_callback_query(c.id, "Commands sent!")
+        except Exception:
+            try:
+                bot.send_message(uid, txt)
+                bot.answer_callback_query(c.id, "Commands sent to PM!")
+            except Exception:
+                bot.answer_callback_query(c.id, "Unable to send commands.", show_alert=True)
+        return
+
+    if data == "jee_pyq":
+        txt = ("📚 <b>JEE Mains PYQ (PCM)</b>\n\n"
+               "Subject choose karein. Niche buttons se Physics/Chemistry/Math ke options aayenge.\n"
+               "Saare sources trusted aur official apps/pages par based hain.")
+        kb = InlineKeyboardMarkup()
+        kb.row(
+            InlineKeyboardButton("⚛️ Physics", callback_data="pyq_physics"),
+            InlineKeyboardButton("🧪 Chemistry", callback_data="pyq_chemistry")
+        )
+        kb.row(InlineKeyboardButton("📐 Math", callback_data="pyq_math"))
+        try:
+            bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=kb)
+            bot.answer_callback_query(c.id)
+        except Exception:
+            bot.answer_callback_query(c.id, "Unable to open PYQ menu.", show_alert=True)
+        return
+
+    if data in ("pyq_physics", "pyq_chemistry", "pyq_math"):
+        subject_map = {
+            "pyq_physics": "Physics",
+            "pyq_chemistry": "Chemistry",
+            "pyq_math": "Math"
+        }
+        subject = subject_map.get(data, "Subject")
+        txt = (f"📚 <b>JEE Mains PYQ - {subject}</b>\n\n"
+               "Recommended sources (all years PYQ coverage):\n"
+               "• ExamSide: https://www.examside.com/jeemain\n"
+               "• ExamGoal: https://www.examgoal.com/\n"
+               "• Marks App: https://play.google.com/store/apps/details?id=com.marksapp\n"
+               "• NTA Abhyas: https://play.google.com/store/apps/details?id=com.mhrd.nta\n")
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("ExamSide", url="https://www.examside.com/jeemain"))
+        kb.add(InlineKeyboardButton("ExamGoal", url="https://www.examgoal.com/"))
+        kb.add(InlineKeyboardButton("Marks App", url="https://play.google.com/store/apps/details?id=com.marksapp"))
+        kb.add(InlineKeyboardButton("NTA Abhyas", url="https://play.google.com/store/apps/details?id=com.mhrd.nta"))
+        try:
+            bot.send_message(cid, txt, reply_markup=kb, disable_web_page_preview=True)
+            bot.answer_callback_query(c.id)
+        except Exception:
+            bot.answer_callback_query(c.id, "Unable to open PYQ links.", show_alert=True)
+        return
+
+    if data == "premium_pyq":
+        if not db.is_premium(uid):
+            bot.answer_callback_query(c.id, "Premium users only. Premium le kar access milega.", show_alert=True)
+            return
+        txt = ("⭐ <b>Premium PYQ (PCM)</b>\n\n"
+               "Unlocked premium access. Physics, Chemistry, Math ke liye curated sources:\n"
+               "• ExamSide (All years)\n"
+               "• ExamGoal (Topic-wise)\n"
+               "• Marks App (Practice sets)\n"
+               "• NTA Abhyas (Official app)\n")
+        kb = InlineKeyboardMarkup()
+        kb.row(
+            InlineKeyboardButton("⚛️ Physics", callback_data="pyq_physics"),
+            InlineKeyboardButton("🧪 Chemistry", callback_data="pyq_chemistry")
+        )
+        kb.row(InlineKeyboardButton("📐 Math", callback_data="pyq_math"))
+        try:
+            bot.send_photo(cid, PYQ_IMG_URL, caption=txt, reply_markup=kb)
+            bot.answer_callback_query(c.id)
+        except Exception:
+            bot.answer_callback_query(c.id, "Unable to open premium PYQ.", show_alert=True)
         return
 
     # Game mode selection
